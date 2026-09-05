@@ -37,6 +37,9 @@ def unique_destination(source: Path, suggested_stem: str, *, index: int = 1) -> 
     return numbered_destination(source, f"{safe_stem}{suffix}", index=index)
 
 
+import sys
+
+
 def numbered_destination(
     source: Path, requested_filename: str, *, index: int = 1,
 ) -> Path:
@@ -55,7 +58,7 @@ def numbered_destination(
     counter = "" if index == 1 else f"_{index}"
     try:
         name_max = os.pathconf(source.parent, "PC_NAME_MAX")
-    except OSError:
+    except (AttributeError, OSError):
         name_max = 255
     if name_max < 1:
         name_max = 255
@@ -86,16 +89,57 @@ def _truncate_to_byte_limit(value: str, byte_limit: int) -> str:
 def rename_noreplace(source: Path | str, destination: Path | str) -> Path:
     """Atomically rename one path without replacing an existing destination.
 
-    This is deliberately Linux-only and fail-closed.  A link/unlink fallback
-    has an unavoidable identity-check-to-unlink race, so callers handling user
-    files must receive a clear error when ``renameat2(RENAME_NOREPLACE)`` is not
-    available instead of silently weakening the operation.
+    On Linux, this uses ``renameat2(RENAME_NOREPLACE)``. On Windows, Python's
+    ``os.rename()`` natively fails with ``FileExistsError`` if the destination exists.
     """
 
     source = Path(source)
     destination = Path(destination)
-    libc = ctypes.CDLL(None, use_errno=True)
-    renameat2 = getattr(libc, "renameat2", None)
+    if sys.platform == "darwin":
+        try:
+            libc = ctypes.CDLL(None, use_errno=True)
+            renameatx_np = getattr(libc, "renameatx_np", None)
+            if renameatx_np is not None:
+                # RENAME_EXCL = 4 on macOS
+                renameatx_np.argtypes = [ctypes.c_int, ctypes.c_char_p, ctypes.c_int, ctypes.c_char_p, ctypes.c_uint]
+                renameatx_np.restype = ctypes.c_int
+                res = renameatx_np(AT_FDCWD, os.fsencode(source), AT_FDCWD, os.fsencode(destination), 4)
+                if res == 0:
+                    return destination
+                err = ctypes.get_errno()
+                if err == errno.EEXIST:
+                    raise FileExistsError(errno.EEXIST, "File exists", os.fspath(destination))
+        except FileExistsError:
+            raise
+        except Exception:
+            pass
+        if destination.exists():
+            raise FileExistsError(errno.EEXIST, "File exists", os.fspath(destination))
+        try:
+            os.rename(source, destination)
+            return destination
+        except FileExistsError:
+            raise
+        except OSError as exc:
+            raise RenameError(f"macOS safe rename failed: {exc}") from exc
+
+    if sys.platform.startswith("win"):
+        if destination.exists():
+            raise FileExistsError(errno.EEXIST, "File exists", os.fspath(destination))
+        try:
+            os.rename(source, destination)
+            return destination
+        except FileExistsError:
+            raise
+        except OSError as exc:
+            raise RenameError(f"Windows safe rename failed: {exc}") from exc
+
+    try:
+        libc = ctypes.CDLL(None, use_errno=True)
+        renameat2 = getattr(libc, "renameat2", None)
+    except (AttributeError, OSError):
+        renameat2 = None
+
     if renameat2 is None:
         raise AtomicRenameUnavailableError(
             "atomic no-replace rename is unavailable on this Linux host"

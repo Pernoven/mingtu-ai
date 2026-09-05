@@ -16,14 +16,24 @@
 
 需要 Python 3.13 以及已安裝的 `httpx>=0.28,<1`、`pydantic>=2.12,<3`。專案 script 不會幫你安裝。
 
-```fish
+### Linux / macOS
+```bash
 cd /path/to/命圖AI
-set -lx PYTHONPATH "$PWD/src"
+export PYTHONPATH="$PWD/src"
 
 python -W error::ResourceWarning -m unittest discover -s tests -v
 python -m compileall -q src tests
-fish -n scripts/dev-run.fish scripts/doctor.fish
 python scripts/build_native_ui.py
+```
+
+### Windows (PowerShell)
+```powershell
+cd \path\to\命圖AI
+$env:PYTHONPATH = "$PWD\src"
+
+python -W error::ResourceWarning -m unittest discover -s tests -v
+python -m compileall -q src tests
+python scripts\build_native_ui.py
 ```
 
 原生 build 使用當前 Python ABI 與已安裝的 `g++` / `pkg-config` / Qt 6 headers，不下載任何東西。如果本機未準備這些工具，仍可先跑純 Python 測試；請不要讓測試腳本自動安裝。
@@ -40,7 +50,8 @@ python scripts/build_native_ui.py
 
 ## Pull request checklist
 
-- [ ] `unittest discover` 通過，且沒有 `ResourceWarning`。
+- [ ] `unittest discover` 通過（Linux, Windows, macOS），且沒有 `ResourceWarning`。
+- [ ] GitHub Actions CI 流水線測試全數通過。
 - [ ] 沒有新增自動下載、自動啟用 service 或對外網路傳輸。
 - [ ] 沒有 hard-coded 個人目錄、token、API key、email 或模型絕對路徑。
 - [ ] 檔案改名、復原與 port 衝突的 no-clobber / no-kill 不變式仍成立。

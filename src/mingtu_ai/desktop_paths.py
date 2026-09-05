@@ -21,10 +21,13 @@ _XDG_PICTURES_ASSIGNMENT = re.compile(
 _DOUBLE_QUOTE_ESCAPE = re.compile(r"\\([\\\"$`])")
 
 
+import sys
+
+
 def home_directory(environ: os._Environ[str] | dict[str, str]) -> Path:
     """Return an absolute home directory, honoring an injected environment."""
 
-    configured = environ.get("HOME")
+    configured = environ.get("HOME") or environ.get("USERPROFILE")
     if configured:
         candidate = Path(configured)
         if candidate.is_absolute():
@@ -41,6 +44,15 @@ def xdg_config_home(environ: os._Environ[str] | dict[str, str]) -> Path:
         candidate = Path(configured)
         if candidate.is_absolute():
             return candidate
+    appdata = environ.get("APPDATA")
+    if appdata:
+        candidate = Path(appdata)
+        if candidate.is_absolute():
+            return candidate
+    if sys.platform == "darwin":
+        return home / "Library" / "Application Support"
+    if sys.platform.startswith("win"):
+        return home / "AppData" / "Roaming"
     return home / ".config"
 
 

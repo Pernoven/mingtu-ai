@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "mingtu-ai"
 version = "0.1.0"
-description = "Local-first file naming assistant for KDE Plasma"
+description = "Local-first AI file naming assistant for Linux, Windows, and macOS"
 readme = "README.md"
 requires-python = ">=3.13,<3.14"
 license = {text = "MIT"}
@@ -13,6 +13,8 @@ classifiers = [
     "License :: OSI Approved :: MIT License",
     "Programming Language :: Python :: 3.13",
     "Operating System :: POSIX :: Linux",
+    "Operating System :: Microsoft :: Windows",
+    "Operating System :: MacOS :: MacOS X",
 ]
 dependencies = [
     "httpx>=0.28,<1",

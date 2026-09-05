@@ -68,9 +68,13 @@ class NotificationBackend(Protocol):
 
 
 def has_desktop_session(environ: Mapping[str, str] | None = None) -> bool:
-    """Return whether the environment identifies a graphical D-Bus session."""
+    """Return whether the environment identifies a graphical desktop session."""
 
     env = os.environ if environ is None else environ
+    if sys.platform == "darwin":
+        return True
+    if sys.platform.startswith("win"):
+        return bool(env.get("SystemRoot") or env.get("WINDIR") or env.get("USERPROFILE"))
     return bool(env.get("DBUS_SESSION_BUS_ADDRESS")) and bool(
         env.get("WAYLAND_DISPLAY") or env.get("DISPLAY") or env.get("KDE_FULL_SESSION")
     )

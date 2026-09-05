@@ -150,6 +150,9 @@ def check_gpu(*, runner: CommandRunner, which: Which) -> CheckResult:
     return CheckResult("GPU", CheckStatus.FAIL, f"nvidia-smi 查詢失敗：{combined}")
 
 
+import sys
+
+
 def check_llama_server(
     *,
     runner: CommandRunner,
@@ -159,12 +162,12 @@ def check_llama_server(
     executable = (
         os.fspath(Path(configured_path).expanduser())
         if configured_path is not None
-        else which("llama-server")
+        else (which("llama-server") or which("llama-server.exe"))
     )
     if not executable:
         return CheckResult("llama-server", CheckStatus.FAIL, "PATH 中找不到 llama-server")
     executable_path = Path(executable)
-    if not executable_path.is_file() or not os.access(executable_path, os.X_OK):
+    if not executable_path.is_file() or (os.name == "posix" and not os.access(executable_path, os.X_OK)):
         return CheckResult(
             "llama-server",
             CheckStatus.FAIL,
@@ -312,6 +315,10 @@ def check_notifications(
 ) -> CheckResult:
     notify_send = which("notify-send")
     if not notify_send:
+        if sys.platform == "darwin":
+            return CheckResult("桌面通知", CheckStatus.WARN, "macOS 無原生 notify-send，執行時會自動降級為主視窗 / Console / 系統提示")
+        if sys.platform.startswith("win"):
+            return CheckResult("桌面通知", CheckStatus.WARN, "Windows 無原生 notify-send，執行時會自動降級為主視窗 / Console 提示")
         return CheckResult("KDE 通知", CheckStatus.FAIL, "找不到 notify-send")
     if not has_desktop_session(environ):
         return CheckResult(

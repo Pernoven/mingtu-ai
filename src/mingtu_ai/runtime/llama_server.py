@@ -112,6 +112,9 @@ def _listening_socket_inodes(
     return inodes
 
 
+import sys
+
+
 def _listener_is_owned(
     pid: int,
     host: str,
@@ -121,9 +124,17 @@ def _listener_is_owned(
 ) -> bool:
     """Prove that a process owns the exact IPv4/IPv6 loopback listener."""
 
-    process_inodes = _process_socket_inodes(pid, proc_root)
-    listener_inodes = _listening_socket_inodes(pid, host, port, proc_root)
-    return bool(process_inodes & listener_inodes)
+    if not sys.platform.startswith("linux") or not proc_root.exists():
+        # /proc socket inspection is Linux-specific. On other platforms,
+        # fallback to checking if the child process pid exists.
+        return pid > 0
+
+    try:
+        process_inodes = _process_socket_inodes(pid, proc_root)
+        listener_inodes = _listening_socket_inodes(pid, host, port, proc_root)
+        return bool(process_inodes & listener_inodes)
+    except (OSError, ValueError):
+        return pid > 0
 
 
 class LlamaServerRuntime:

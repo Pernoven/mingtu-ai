@@ -28,21 +28,24 @@ QT_PACKAGES = ("Qt6Widgets", "Qt6DBus")
 def native_extension() -> Extension:
     """Return the single CPython 3.13 extension built into platform wheels."""
 
-    return Extension(
-        NATIVE_MODULE,
-        sources=[NATIVE_SOURCE],
-        language="c++",
-        extra_compile_args=[
+    compile_args = (
+        ["/std:c++20", "/O2", "/W4"]
+        if sys.platform.startswith("win")
+        else [
             "-std=c++20",
             "-O2",
             "-Wall",
             "-Wextra",
             "-Wpedantic",
-            # CPython's documented static PyTypeObject/PyModuleDef patterns
-            # intentionally initialize their version-dependent tails at runtime.
             "-Wno-missing-field-initializers",
             "-Wno-cast-function-type",
-        ],
+        ]
+    )
+    return Extension(
+        NATIVE_MODULE,
+        sources=[NATIVE_SOURCE],
+        language="c++",
+        extra_compile_args=compile_args,
     )
 
 
