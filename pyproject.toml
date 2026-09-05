@@ -8,7 +8,9 @@ version = "0.1.0"
 description = "Local-first file naming assistant for KDE Plasma"
 readme = "README.md"
 requires-python = ">=3.13,<3.14"
+license = {text = "MIT"}
 classifiers = [
+    "License :: OSI Approved :: MIT License",
     "Programming Language :: Python :: 3.13",
     "Operating System :: POSIX :: Linux",
 ]

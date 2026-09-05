@@ -210,3 +210,8 @@ python -m compileall -q src tests
 - [systemd / autostart 資產](docs/packaging.md)
 - [貢獻指南](CONTRIBUTING.md)
 - [安全政策](SECURITY.md)
+
+## License
+
+本專案採用 [MIT License](LICENSE) 授權發行。
+
