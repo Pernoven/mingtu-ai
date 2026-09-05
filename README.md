@@ -3,7 +3,7 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 [![Python 3.13](https://img.shields.io/badge/Python-3.13-blue.svg)](https://www.python.org/)
 [![Platform Support](https://img.shields.io/badge/Platform-Linux%20%7C%20macOS%20%7C%20Windows-brightgreen.svg)](#)
-[![CI Status](https://github.com/knox/mingtu-ai/actions/workflows/ci.yml/badge.svg)](../../actions/workflows/ci.yml)
+[![CI Status](https://github.com/Pernoven/mingtu-ai/actions/workflows/ci.yml/badge.svg)](../../actions/workflows/ci.yml)
 
 > Instant, local-first AI file auto-naming assistant powered by Gemma 4 & llama.cpp.
 
@@ -53,7 +53,7 @@ File Created (inotify / Windows DirectoryWatcher / macOS Watcher)
 
 #### Linux / macOS
 ```bash
-git clone https://github.com/knox/mingtu-ai.git
+git clone https://github.com/Pernoven/mingtu-ai.git
 cd mingtu-ai
 
 export PYTHONPATH="$PWD/src"
@@ -65,7 +65,7 @@ python scripts/build_native_ui.py
 
 #### Windows (PowerShell)
 ```powershell
-git clone https://github.com/knox/mingtu-ai.git
+git clone https://github.com/Pernoven/mingtu-ai.git
 cd mingtu-ai
 
 $env:PYTHONPATH = "$PWD\src"

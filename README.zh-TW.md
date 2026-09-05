@@ -3,7 +3,7 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 [![Python 3.13](https://img.shields.io/badge/Python-3.13-blue.svg)](https://www.python.org/)
 [![Platform Support](https://img.shields.io/badge/Platform-Linux%20%7C%20macOS%20%7C%20Windows-brightgreen.svg)](#)
-[![CI Status](https://github.com/knox/mingtu-ai/actions/workflows/ci.yml/badge.svg)](../../actions/workflows/ci.yml)
+[![CI Status](https://github.com/Pernoven/mingtu-ai/actions/workflows/ci.yml/badge.svg)](../../actions/workflows/ci.yml)
 
 > 在檔案誕生的那一刻，用你自己電腦裡的 AI 讀懂它，再給它一個以後找得到的名字。
 
