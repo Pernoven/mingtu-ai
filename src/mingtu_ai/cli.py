@@ -62,12 +62,23 @@ def build_parser(
     )
     mode = parser.add_mutually_exclusive_group()
     mode.add_argument("--once", metavar="FILE", type=Path, help="分析一個檔案後結束")
+    mode.add_argument("--batch", "--batch-dir", metavar="DIR", type=Path, help="批次重命名指定資料夾內的所有檔案")
     mode.add_argument("--doctor", action="store_true", help="檢查本地執行環境")
     mode.add_argument(
         "--resolve-ollama",
         metavar="MODEL",
         help="唯讀顯示 Ollama 模型對應的本機 GGUF blob",
     )
+    parser.add_argument("--recursive", action="store_true", help="批次處理時包含子資料夾")
+    parser.add_argument(
+        "--preset",
+        choices=["default", "photo_date", "category_ai"],
+        default="default",
+        help="命名策略範本 (default, photo_date, category_ai)",
+    )
+    parser.add_argument("--hint", type=str, default=None, help="批次命名的 AI 提示語")
+    parser.add_argument("--dry-run", action="store_true", help="批次處理時僅顯示建議不實際寫入/改名")
+    parser.add_argument("-y", "--yes", action="store_true", help="批次處理時一鍵自動套用所有改名建議")
     parser.add_argument(
         "--model",
         type=Path,
@@ -228,6 +239,35 @@ def main(
                     print(json.dumps(payload, ensure_ascii=False, indent=2), file=out)
                 else:
                     print(f"建議檔名：{proposal.suggested_filename}", file=out)
+                return 0
+
+            if args.batch is not None:
+                batch_res = coordinator.analyze_batch(
+                    args.batch,
+                    recursive=args.recursive,
+                    preset=args.preset,
+                    hint=args.hint,
+                )
+                if args.json:
+                    output_data = batch_res.model_dump(mode="json")
+                    if args.yes and not args.dry_run:
+                        renamed = coordinator.accept_batch(batch_res.batch_id)
+                        output_data["renamed_count"] = len(renamed)
+                    print(json.dumps(output_data, ensure_ascii=False, indent=2), file=out)
+                else:
+                    print(f"資料夾批次分析完成 (Batch ID: {batch_res.batch_id})", file=out)
+                    print(f"目錄：{batch_res.directory}", file=out)
+                    print(f"總檔案數：{batch_res.total_files} | 成功：{batch_res.processed_files} | 失敗：{batch_res.failed_files}", file=out)
+                    for item in batch_res.items:
+                        print(f"  [原檔] {item.source_path.name}  ==>  [建議] {item.suggested_filename}", file=out)
+
+                    if args.dry_run:
+                        print("\n[Dry Run] 試執行模式：未實施實際檔案改名。", file=out)
+                    elif args.yes:
+                        renamed_events = coordinator.accept_batch(batch_res.batch_id)
+                        print(f"\n[一鍵改名] 已成功套用 {len(renamed_events)} 個檔案的批次改名！", file=out)
+                    else:
+                        print("\n提示：加上 `-y` / `--yes` 可一鍵自動套用上述改名建議，或加上 `--dry-run` 進行試執行。", file=out)
                 return 0
 
             if not args.headless:

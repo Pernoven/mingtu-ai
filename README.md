@@ -104,6 +104,8 @@ python -m mingtu_ai.cli --once /path/to/sample_screenshot.png
 mingtu-ai                         # Watch default system Pictures/Screenshots directory
 mingtu-ai --watch DIR            # Watch custom directory (can be passed multiple times)
 mingtu-ai --once FILE            # Analyze a single file instantly
+mingtu-ai --batch DIR --dry-run   # Preview batch folder renaming without modifying files
+mingtu-ai --batch DIR -y         # One-click batch rename folder (--preset photo_date)
 mingtu-ai --doctor               # Run 8-point system diagnostic (GPU, Ports, Models, UI)
 mingtu-ai --doctor --json        # Output diagnostic results as JSON
 mingtu-ai --resolve-ollama MODEL # Resolve GGUF blob path from local Ollama model reference

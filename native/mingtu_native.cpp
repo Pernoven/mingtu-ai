@@ -3,7 +3,10 @@
 
 #include <QAction>
 #include <QApplication>
+#include <QCheckBox>
+#include <QComboBox>
 #include <QCoreApplication>
+#include <QDialog>
 #include <QFileDialog>
 #include <QHBoxLayout>
 #include <QHeaderView>
@@ -245,6 +248,166 @@ public:
         PyGILState_Release(gil);
     }
 
+    void batch_rename_folder_action() {
+        QDialog dialog(main_window_);
+        dialog.setWindowTitle(QStringLiteral("命圖 AI｜一鍵資料夾批次重命名"));
+        dialog.resize(540, 280);
+
+        auto *layout = new QVBoxLayout(&dialog);
+
+        auto *intro = new QLabel(QStringLiteral("選擇資料夾並進行一鍵 AI 批次重新命名與照片整理："), &dialog);
+        intro->setStyleSheet(QStringLiteral("font-weight: bold;"));
+        layout->addWidget(intro);
+
+        // Directory selection
+        auto *dir_layout = new QHBoxLayout();
+        auto *dir_edit = new QLineEdit(&dialog);
+        dir_edit->setPlaceholderText(QStringLiteral("請點擊右側按鈕選擇資料夾…"));
+        auto *browse_btn = new QPushButton(QStringLiteral("選擇資料夾…"), &dialog);
+        dir_layout->addWidget(dir_edit, 1);
+        dir_layout->addWidget(browse_btn);
+        layout->addLayout(dir_layout);
+
+        QObject::connect(browse_btn, &QPushButton::clicked, [&dialog, dir_edit]() {
+            const QString dir = QFileDialog::getExistingDirectory(
+                &dialog,
+                QStringLiteral("選擇要重命名的資料夾"),
+                QString(),
+                QFileDialog::ShowDirsOnly | QFileDialog::DontResolveSymlinks
+            );
+            if (!dir.isEmpty()) {
+                dir_edit->setText(dir);
+            }
+        });
+
+        // Preset Combo Box
+        auto *preset_layout = new QHBoxLayout();
+        auto *preset_label = new QLabel(QStringLiteral("命名策略範本："), &dialog);
+        auto *preset_combo = new QComboBox(&dialog);
+        preset_combo->addItem(QStringLiteral("預設 AI 語意摘要 (Default)"), QStringLiteral("default"));
+        preset_combo->addItem(QStringLiteral("照片日期時間 + AI 摘要 (Photo Date Prefix)"), QStringLiteral("photo_date"));
+        preset_combo->addItem(QStringLiteral("檔案類別前綴 + AI 摘要 (Category Prefix)"), QStringLiteral("category_ai"));
+        preset_layout->addWidget(preset_label);
+        preset_layout->addWidget(preset_combo, 1);
+        layout->addLayout(preset_layout);
+
+        // AI Hint
+        auto *hint_layout = new QHBoxLayout();
+        auto *hint_label = new QLabel(QStringLiteral("AI 命名提示詞："), &dialog);
+        auto *hint_edit = new QLineEdit(&dialog);
+        hint_edit->setPlaceholderText(QStringLiteral("選填，例如：2026沖繩旅遊照片、財務報表"));
+        hint_layout->addWidget(hint_label);
+        hint_layout->addWidget(hint_edit, 1);
+        layout->addLayout(hint_layout);
+
+        // Recursive Checkbox
+        auto *recursive_check = new QCheckBox(QStringLiteral("遞迴包含子資料夾內的所有檔案"), &dialog);
+        layout->addWidget(recursive_check);
+
+        // Buttons
+        auto *btn_layout = new QHBoxLayout();
+        auto *run_btn = new QPushButton(QStringLiteral("🚀 一鍵分析並改名"), &dialog);
+        run_btn->setStyleSheet(QStringLiteral("font-weight: bold; background-color: #27ae60; color: white; padding: 6px 12px;"));
+        auto *preview_btn = new QPushButton(QStringLiteral("🔍 僅產生建議預覽"), &dialog);
+        auto *cancel_btn = new QPushButton(QStringLiteral("取消"), &dialog);
+
+        btn_layout->addWidget(run_btn);
+        btn_layout->addWidget(preview_btn);
+        btn_layout->addWidget(cancel_btn);
+        layout->addLayout(btn_layout);
+
+        QObject::connect(cancel_btn, &QPushButton::clicked, [&dialog]() { dialog.reject(); });
+
+        bool run_clicked = false;
+        bool auto_accept = false;
+
+        QObject::connect(run_btn, &QPushButton::clicked, [&dialog, &run_clicked, &auto_accept]() {
+            run_clicked = true;
+            auto_accept = true;
+            dialog.accept();
+        });
+
+        QObject::connect(preview_btn, &QPushButton::clicked, [&dialog, &run_clicked, &auto_accept]() {
+            run_clicked = true;
+            auto_accept = false;
+            dialog.accept();
+        });
+
+        if (dialog.exec() != QDialog::Accepted || !run_clicked) {
+            return;
+        }
+
+        const QString target_dir = dir_edit->text().trimmed();
+        if (target_dir.isEmpty()) {
+            QMessageBox::warning(main_window_, QStringLiteral("命圖 AI"), QStringLiteral("請選擇有效的資料夾！"));
+            return;
+        }
+
+        const QString preset = preset_combo->currentData().toString();
+        const QString hint = hint_edit->text().trimmed();
+        const bool recursive = recursive_check->isChecked();
+
+        PyGILState_STATE gil = PyGILState_Ensure();
+        PyObject *dir_obj = PyUnicode_FromString(target_dir.toUtf8().constData());
+        PyObject *preset_obj = PyUnicode_FromString(preset.toUtf8().constData());
+        PyObject *hint_obj = hint.isEmpty() ? Py_NewRef(Py_None) : PyUnicode_FromString(hint.toUtf8().constData());
+
+        if (dir_obj != nullptr && preset_obj != nullptr && hint_obj != nullptr) {
+            PyObject *result = PyObject_CallMethod(
+                controller_,
+                "request_batch_analyze",
+                "OpOOO",
+                dir_obj,
+                recursive ? 1 : 0,
+                preset_obj,
+                hint_obj,
+                auto_accept ? Py_True : Py_False
+            );
+            Py_XDECREF(dir_obj);
+            Py_XDECREF(preset_obj);
+            Py_XDECREF(hint_obj);
+
+            if (result == nullptr) {
+                PyErr_Print();
+                set_action_message(QStringLiteral("無法執行批次重命名，請查看終端記錄。"));
+            } else {
+                set_action_busy(true);
+                set_action_message(auto_accept ? QStringLiteral("資料夾批次分析與一鍵改名執行中…") : QStringLiteral("資料夾批次分析執行中…"));
+                Py_DECREF(result);
+            }
+        }
+        PyGILState_Release(gil);
+    }
+
+    void batch_undo_action() {
+        bool ok = false;
+        const QString batch_id = QInputDialog::getText(
+            history_window_,
+            QStringLiteral("一鍵復原批次改名"),
+            QStringLiteral("輸入要復原的 Batch ID（例如：batch_20260905_120000_a1b2c3）:"),
+            QLineEdit::Normal,
+            QString(),
+            &ok
+        );
+        if (!ok || batch_id.trimmed().isEmpty()) return;
+
+        PyGILState_STATE gil = PyGILState_Ensure();
+        PyObject *batch_obj = PyUnicode_FromString(batch_id.trimmed().toUtf8().constData());
+        if (batch_obj != nullptr) {
+            PyObject *result = PyObject_CallMethod(controller_, "request_batch_undo", "O", batch_obj);
+            Py_DECREF(batch_obj);
+            if (result == nullptr) {
+                PyErr_Print();
+                set_action_message(QStringLiteral("無法執行批次復原，請查看終端記錄。"));
+            } else {
+                set_action_busy(true);
+                set_action_message(QStringLiteral("批次復原執行中…"));
+                Py_DECREF(result);
+            }
+        }
+        PyGILState_Release(gil);
+    }
+
     void set_error(const QString &message) {
         model_label_->setText(QStringLiteral("模型狀態：錯誤"));
         error_label_->setText(message);
@@ -335,12 +498,16 @@ private:
         QObject::connect(ignore_button_, &QPushButton::clicked, [this]() { proposal_action(QStringLiteral("ignore")); });
 
         auto *buttons = new QHBoxLayout();
+        auto *batch_button = new QPushButton(QStringLiteral("📁 一鍵批次重命名資料夾…"), central);
+        batch_button->setStyleSheet(QStringLiteral("font-weight: bold; background-color: #2980b9; color: white; padding: 4px 10px;"));
         auto *history_button = new QPushButton(QStringLiteral("歷史紀錄"), central);
         auto *settings_button = new QPushButton(QStringLiteral("設定"), central);
+        buttons->addWidget(batch_button);
         buttons->addWidget(history_button);
         buttons->addWidget(settings_button);
         buttons->addStretch();
         layout->addLayout(buttons);
+        QObject::connect(batch_button, &QPushButton::clicked, [this]() { batch_rename_folder_action(); });
         QObject::connect(history_button, &QPushButton::clicked, [this]() { show_history(); });
         QObject::connect(settings_button, &QPushButton::clicked, [this]() { show_settings(); });
 
@@ -455,14 +622,22 @@ private:
         layout->addWidget(scope);
         history_ = make_table(central, {QStringLiteral("時間"), QStringLiteral("事件／狀態"), QStringLiteral("原檔名"), QStringLiteral("目的／建議檔名"), QStringLiteral("詳情")});
         layout->addWidget(history_, 1);
+
+        auto *hist_buttons = new QHBoxLayout();
         undo_button_ = new QPushButton(QStringLiteral("復原選取的改名"), central);
-        layout->addWidget(undo_button_);
+        auto *batch_undo_btn = new QPushButton(QStringLiteral("一鍵復原批次改名…"), central);
+        hist_buttons->addWidget(undo_button_);
+        hist_buttons->addWidget(batch_undo_btn);
+        hist_buttons->addStretch();
+        layout->addLayout(hist_buttons);
+
         history_message_ = new QLabel(central);
         history_message_->setWordWrap(true);
         layout->addWidget(history_message_);
         history_window_->setCentralWidget(central);
         QObject::connect(history_, &QTableWidget::itemSelectionChanged, [this]() { update_action_buttons(); });
         QObject::connect(undo_button_, &QPushButton::clicked, [this]() { submit_action(QStringLiteral("undo"), selected_id(history_)); });
+        QObject::connect(batch_undo_btn, &QPushButton::clicked, [this]() { batch_undo_action(); });
         update_action_buttons();
     }
 
@@ -508,6 +683,7 @@ private:
         pause_action_ = menu->addAction(QStringLiteral("暫停監控"));
         pending_action_ = menu->addAction(QStringLiteral("待處理檔案：0"));
         pending_action_->setEnabled(false);
+        auto *batch_action = menu->addAction(QStringLiteral("📁 一鍵批次重命名資料夾…"));
         auto *history_action = menu->addAction(QStringLiteral("歷史紀錄"));
         auto *settings_action = menu->addAction(QStringLiteral("設定"));
         menu->addSeparator();
@@ -523,6 +699,7 @@ private:
         tray_icon_->setContextMenu(menu);
 
         QObject::connect(open_action, &QAction::triggered, [this]() { show_home(); });
+        QObject::connect(batch_action, &QAction::triggered, [this]() { batch_rename_folder_action(); });
         QObject::connect(history_action, &QAction::triggered, [this]() { show_history(); });
         QObject::connect(settings_action, &QAction::triggered, [this]() { show_settings(); });
         QObject::connect(quit_action, &QAction::triggered, [this]() { request_quit(); });

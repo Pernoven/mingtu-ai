@@ -428,8 +428,21 @@ class HistoryStore:
         if source.name == filename:
             raise ValueError("suggested filename is already the current filename")
 
+        batch_id = None
+        if suggestion_event_id is not None:
+            parent = self.get(suggestion_event_id)
+            if parent and parent.metadata:
+                batch_id = parent.metadata.get("batch_id")
+
         for index in range(1, 1_000_000):
             target = _candidate_path(source, filename, index)
+            meta = {
+                "collision_index": index,
+                "target_identity": list(identity[:2]),
+                "move_strategy": "renameat2_noreplace",
+            }
+            if batch_id:
+                meta["batch_id"] = batch_id
             event_id = self._insert(
                 EventType.RENAME,
                 EventStatus.PENDING,
@@ -437,11 +450,7 @@ class HistoryStore:
                 target_path=target,
                 suggested_name=filename,
                 parent_event_id=suggestion_event_id,
-                metadata={
-                    "collision_index": index,
-                    "target_identity": list(identity[:2]),
-                    "move_strategy": "renameat2_noreplace",
-                },
+                metadata=meta,
             )
             try:
                 # Recheck immediately before the syscall. renameat2 itself is
@@ -757,6 +766,34 @@ class HistoryStore:
                 "SELECT * FROM history_events ORDER BY id DESC LIMIT ?", (limit,)
             ).fetchall()
         return [self._row_to_event(row) for row in rows]
+
+    def get_batch_rename_events(self, batch_id: str) -> list[HistoryEvent]:
+        """Return all successful rename events associated with a batch_id."""
+        if not batch_id:
+            return []
+        with closing(self._connect()) as connection:
+            rows = connection.execute(
+                "SELECT * FROM history_events WHERE event_type = 'rename' AND status = 'success' ORDER BY id DESC"
+            ).fetchall()
+        matching: list[HistoryEvent] = []
+        for row in rows:
+            event = self._row_to_event(row)
+            if event.metadata.get("batch_id") == batch_id:
+                matching.append(event)
+        return matching
+
+    def undo_batch(self, batch_id: str) -> list[HistoryEvent]:
+        """Undo all successful rename events in a batch in reverse order."""
+        events = self.get_batch_rename_events(batch_id)
+        undone: list[HistoryEvent] = []
+        for event in events:
+            if self.can_undo_rename(event.id):
+                try:
+                    undo_evt = self.undo_rename(event.id)
+                    undone.append(undo_evt)
+                except Exception:
+                    pass
+        return undone
 
     @staticmethod
     def _row_to_event(row: sqlite3.Row) -> HistoryEvent:

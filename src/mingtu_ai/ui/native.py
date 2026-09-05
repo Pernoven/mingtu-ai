@@ -190,7 +190,53 @@ class NativeUiController:
             if self._action_thread is None or self._stop_event.is_set() or self._action_busy:
                 return False
             self._action_busy = True
-            self._actions.put_nowait((action, event_id, edited_stem))
+            self._actions.put_nowait((action, event_id, edited_stem, None))
+            if self._bridge is not None:
+                self._bridge.set_action_busy(True)
+        return True
+
+    def request_batch_analyze(
+        self,
+        directory: str,
+        recursive: bool = False,
+        preset: str = "default",
+        hint: str | None = None,
+        auto_accept: bool = False,
+    ) -> bool:
+        with self._action_lock:
+            if self._action_thread is None or self._stop_event.is_set() or self._action_busy:
+                return False
+            self._action_busy = True
+            payload = {
+                "directory": directory,
+                "recursive": recursive,
+                "preset": preset,
+                "hint": hint,
+                "auto_accept": auto_accept,
+            }
+            self._actions.put_nowait(("batch_analyze", 0, None, payload))
+            if self._bridge is not None:
+                self._bridge.set_action_busy(True)
+        return True
+
+    def request_batch_accept(self, batch_id: str | None = None) -> bool:
+        with self._action_lock:
+            if self._action_thread is None or self._stop_event.is_set() or self._action_busy:
+                return False
+            self._action_busy = True
+            payload = {"batch_id": batch_id}
+            self._actions.put_nowait(("batch_accept", 0, None, payload))
+            if self._bridge is not None:
+                self._bridge.set_action_busy(True)
+        return True
+
+    def request_batch_undo(self, batch_id: str) -> bool:
+        with self._action_lock:
+            if self._action_thread is None or self._stop_event.is_set() or self._action_busy:
+                return False
+            self._action_busy = True
+            payload = {"batch_id": batch_id}
+            self._actions.put_nowait(("batch_undo", 0, None, payload))
             if self._bridge is not None:
                 self._bridge.set_action_busy(True)
         return True
@@ -198,20 +244,54 @@ class NativeUiController:
     def _run_actions(self) -> None:
         while not self._stop_event.is_set() or not self._actions.empty():
             try:
-                action, event_id, edited_stem = self._actions.get(timeout=0.1)
+                item = self._actions.get(timeout=0.1)
+                action, event_id, edited_stem = item[0], item[1], item[2]
+                extra = item[3] if len(item) > 3 else None
             except queue.Empty:
                 continue
             try:
-                if action in {"accept", "edit"}:
+                if action == "batch_analyze" and extra:
+                    batch_res = self.coordinator.analyze_batch(
+                        extra["directory"],
+                        recursive=extra.get("recursive", False),
+                        preset=extra.get("preset", "default"),
+                        hint=extra.get("hint"),
+                    )
+                    if extra.get("auto_accept", False) and batch_res.processed_files > 0:
+                        renamed_events = self.coordinator.accept_batch(batch_res.batch_id)
+                        message = (
+                            f"一鍵資料夾批次改名完成 (Batch ID: {batch_res.batch_id})："
+                            f"已成功重新命名 {len(renamed_events)} 個檔案。"
+                        )
+                    else:
+                        message = (
+                            f"資料夾批次分析完成 (Batch ID: {batch_res.batch_id})：共產生 "
+                            f"{batch_res.processed_files}/{batch_res.total_files} 個改名建議。"
+                        )
+                elif action == "batch_accept" and extra:
+                    events = self.coordinator.accept_batch(batch_id=extra.get("batch_id"))
+                    message = f"一鍵批次改名完成：共成功改名 {len(events)} 個檔案。"
+                elif action == "batch_undo" and extra:
+                    events = self.coordinator.undo_batch(batch_id=extra["batch_id"])
+                    message = f"一鍵批次復原完成：共恢復 {len(events)} 個檔案。"
+                elif action in {"accept", "edit"}:
                     result = self.coordinator.accept_proposal(event_id, edited_stem=edited_stem)
+                    message = (
+                        "操作完成。" if result is not None else
+                        "操作未完成或建議已處理；請查看歷史紀錄中的結果與錯誤。"
+                    )
                 elif action == "ignore":
                     result = self.coordinator.ignore_proposal(event_id)
+                    message = (
+                        "操作完成。" if result is not None else
+                        "操作未完成或建議已處理；請查看歷史紀錄中的結果與錯誤。"
+                    )
                 else:
                     result = self.coordinator.undo(event_id)
-                message = (
-                    "操作完成。" if result is not None else
-                    "操作未完成或建議已處理；請查看歷史紀錄中的結果與錯誤。"
-                )
+                    message = (
+                        "操作完成。" if result is not None else
+                        "操作未完成或建議已處理；請查看歷史紀錄中的結果與錯誤。"
+                    )
             except Exception as exc:
                 message = f"操作失敗：{type(exc).__name__}: {exc}"
             finally:

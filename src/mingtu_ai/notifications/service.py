@@ -478,6 +478,50 @@ class NotificationService:
             )
         )
 
+    def notify_batch_analysis_complete(
+        self, processed_files: int, total_files: int, failed_files: int = 0
+    ) -> NotificationReceipt:
+        """Show a single summary notification when batch folder analysis finishes."""
+        body = f"成功為 {processed_files}/{total_files} 個檔案產生改名建議"
+        if failed_files > 0:
+            body += f"（{failed_files} 個失敗）"
+        return self.show(
+            Notification(
+                summary="資料夾批次分析完成",
+                body=body,
+                expire_ms=10_000,
+            )
+        )
+
+    def notify_batch_renamed(
+        self,
+        count: int,
+        *,
+        on_undo: ActionCallback | None = None,
+    ) -> NotificationReceipt:
+        """Show a single summary notification when a batch rename finishes, with optional undo."""
+        actions = ()
+        if on_undo is not None:
+            actions = (NotificationAction("undo", "一鍵復原批次", on_undo),)
+        return self.show(
+            Notification(
+                summary="批次命名完成",
+                body=f"已成功重新命名 {count} 個檔案",
+                actions=actions,
+                expire_ms=15_000,
+            )
+        )
+
+    def notify_batch_restored(self, count: int) -> NotificationReceipt:
+        """Show a single summary notification when a batch undo finishes."""
+        return self.show(
+            Notification(
+                summary="批次復原完成",
+                body=f"已成功恢復 {count} 個檔案原始檔名",
+                expire_ms=10_000,
+            )
+        )
+
     def close(self) -> None:
         """Close the configured backend and its owned helper resources."""
 

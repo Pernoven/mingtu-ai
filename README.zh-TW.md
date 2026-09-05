@@ -118,6 +118,8 @@ python -m pip install -e .
 mingtu-ai                         # 以預設圖片目錄常駐監控
 mingtu-ai --watch DIR            # 指定監控目錄，可重複
 mingtu-ai --once FILE            # 單檔分析與現場 demo 備援
+mingtu-ai --batch DIR --dry-run   # 資料夾批次預覽（不寫入檔案）
+mingtu-ai --batch DIR -y         # 資料夾一鍵批次改名（可加 --preset photo_date）
 mingtu-ai --doctor               # 診斷 GPU、模型、桌面通知、連接埠與工具
 mingtu-ai --doctor --json        # 結構化診斷
 mingtu-ai --resolve-ollama MODEL # 唯讀檢查 Ollama reference 與 blob

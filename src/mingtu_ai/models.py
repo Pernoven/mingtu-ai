@@ -88,3 +88,41 @@ class NamingSuggestion(BaseModel):
         if len(set(values)) != len(values):
             raise ValueError("keywords must be unique")
         return values
+
+
+from enum import StrEnum
+
+
+class BatchPreset(StrEnum):
+    DEFAULT = "default"
+    PHOTO_DATE = "photo_date"
+    CATEGORY_AI = "category_ai"
+
+
+class BatchItemProposal(BaseModel):
+    """Result proposal for a single file in a batch renaming job."""
+
+    model_config = ConfigDict(extra="forbid", arbitrary_types_allowed=True)
+
+    source_path: Path
+    suggested_filename: str
+    suggested_stem: str
+    history_event_id: int
+    category: str = "general"
+    keywords: list[str] = Field(default_factory=list)
+    confidence: float = 1.0
+
+
+class BatchAnalysisResult(BaseModel):
+    """Summary of a completed batch folder analysis."""
+
+    model_config = ConfigDict(extra="forbid", arbitrary_types_allowed=True)
+
+    batch_id: str
+    directory: Path
+    total_files: int
+    processed_files: int
+    failed_files: int
+    items: list[BatchItemProposal] = Field(default_factory=list)
+    failures: dict[str, str] = Field(default_factory=dict)
+

@@ -5,15 +5,20 @@ from __future__ import annotations
 from collections.abc import Callable, Iterator, Sequence
 from contextlib import AbstractContextManager, contextmanager
 from dataclasses import dataclass
+from datetime import datetime, timezone
 import os
 from pathlib import Path
 import shutil
 import subprocess
 import threading
 from typing import Any, Protocol
+import uuid
 
-from mingtu_ai import AnalysisInput, AppConfig, NamingSuggestion
+from mingtu_ai import (
+    AnalysisInput, AppConfig, BatchAnalysisResult, BatchItemProposal, BatchPreset, NamingSuggestion,
+)
 from mingtu_ai.adapters import AdaptedFile, adapt_file
+from mingtu_ai.batch import apply_naming_preset, scan_batch_candidates
 from mingtu_ai.desktop_paths import save_user_watch_directories
 from mingtu_ai.history import (
     HistoryEvent, HistoryStore, RenamePostCommitError, RenameRecoveryRequiredError,
@@ -147,6 +152,7 @@ class ApplicationCoordinator:
         self._failure_lock = threading.Lock()
         self._decision_lock = threading.RLock()
         self._pending_proposals: dict[int, SuggestionProposal] = {}
+        self._batch_options: dict[Path, tuple[str, str, str | None]] = {}
         self._paused = threading.Event()
         self._queue: SingleWorkerQueue[Any, SuggestionProposal] = SingleWorkerQueue(
             runtime_factory=self._runtime_factory,
@@ -222,6 +228,121 @@ class ApplicationCoordinator:
             raise ProcessingError(task.error or "處理失敗")
         return task.result
 
+    def analyze_batch(
+        self,
+        directory: Path | str,
+        *,
+        recursive: bool = False,
+        preset: BatchPreset | str = BatchPreset.DEFAULT,
+        hint: str | None = None,
+        progress_callback: Callable[[int, int, Path], None] | None = None,
+    ) -> BatchAnalysisResult:
+        dir_path = Path(directory).expanduser().absolute()
+        candidates = scan_batch_candidates(
+            dir_path,
+            recursive=recursive,
+            history_path=self.history.database_path,
+        )
+        total = len(candidates)
+        batch_id = f"batch_{datetime.now(timezone.utc).strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex[:6]}"
+
+        items: list[BatchItemProposal] = []
+        failures: dict[str, str] = {}
+        processed = 0
+
+        for index, path in enumerate(candidates, start=1):
+            if progress_callback is not None:
+                try:
+                    progress_callback(index - 1, total, path)
+                except Exception:
+                    pass
+
+            with self._decision_lock:
+                self._batch_options[path] = (batch_id, str(preset), hint)
+
+            task = self._queue.submit(path)
+            self._queue.run_until_idle()
+
+            if task.state is TaskState.SUCCEEDED and task.result is not None:
+                prop = task.result
+                items.append(
+                    BatchItemProposal(
+                        source_path=prop.source_path,
+                        suggested_filename=prop.suggested_filename,
+                        suggested_stem=prop.suggestion.suggested_stem,
+                        history_event_id=prop.history_event_id,
+                        category=prop.suggestion.category,
+                        keywords=prop.suggestion.keywords,
+                        confidence=prop.suggestion.confidence,
+                    )
+                )
+                processed += 1
+            else:
+                failures[str(path)] = task.error or "處理失敗"
+
+            if progress_callback is not None:
+                try:
+                    progress_callback(index, total, path)
+                except Exception:
+                    pass
+
+        res = BatchAnalysisResult(
+            batch_id=batch_id,
+            directory=dir_path,
+            total_files=total,
+            processed_files=processed,
+            failed_files=len(failures),
+            items=items,
+            failures=failures,
+        )
+        if processed > 0 or len(failures) > 0:
+            self.notifications.notify_batch_analysis_complete(
+                processed, total, failed_files=len(failures)
+            )
+        return res
+
+    def accept_batch(
+        self,
+        batch_id: str | None = None,
+        proposals: Sequence[SuggestionProposal] | None = None,
+    ) -> list[HistoryEvent]:
+        accepted_events: list[HistoryEvent] = []
+        with self._decision_lock:
+            target_proposals: list[SuggestionProposal] = []
+            if proposals is not None:
+                target_proposals = list(proposals)
+            elif batch_id is not None:
+                for item in list(self._pending_proposals.values()):
+                    history_event = self.history.get(item.history_event_id)
+                    if history_event and history_event.metadata.get("batch_id") == batch_id:
+                        target_proposals.append(item)
+            else:
+                target_proposals = list(self._pending_proposals.values())
+
+            for proposal in target_proposals:
+                event = self._accept_pending(proposal, edited_stem=None, notify_desktop=False)
+                if event is not None:
+                    accepted_events.append(event)
+
+        if accepted_events:
+            effective_batch_id = batch_id or (
+                accepted_events[0].metadata.get("batch_id") if accepted_events[0].metadata else None
+            )
+            on_undo = (
+                (lambda: self.undo_batch(effective_batch_id))
+                if effective_batch_id
+                else None
+            )
+            self.notifications.notify_batch_renamed(len(accepted_events), on_undo=on_undo)
+        return accepted_events
+
+    def undo_batch(self, batch_id: str) -> list[HistoryEvent]:
+        with self._decision_lock:
+            undone = self.history.undo_batch(batch_id)
+        if undone:
+            self.notifications.notify_batch_restored(len(undone))
+        return undone
+
     def run_forever(self, stop_event: threading.Event | None = None) -> None:
         if not self.watch_directories:
             raise ValueError("常駐監控至少需要一個目錄")
@@ -253,6 +374,7 @@ class ApplicationCoordinator:
     def _analyze(self, path: Path, runtime: Any) -> SuggestionProposal:
         with self._decision_lock:
             self._check_proposal_capacity()
+            batch_info = self._batch_options.pop(path, None)
         identity_before = self._source_identity(path)
         with self._adapter_factory(path) as adapted:
             authoritative_identity = adapted.source_identity or identity_before
@@ -275,20 +397,33 @@ class ApplicationCoordinator:
             raise ProcessingError("檔案在分析期間已變更，請重試")
 
         safe_stem = sanitize_stem(suggestion.suggested_stem, fallback=path.stem)
+        if batch_info and batch_info[1] != BatchPreset.DEFAULT:
+            safe_stem = apply_naming_preset(
+                safe_stem, path, preset=batch_info[1], category=suggestion.category
+            )
+            safe_stem = sanitize_stem(safe_stem, fallback=path.stem)
+
         filename = self._preview_available_filename(path, safe_stem)
+        meta = {
+            "detected_language": suggestion.detected_language,
+            "category": suggestion.category,
+            "keywords": suggestion.keywords,
+            "confidence": suggestion.confidence,
+            "adapter_kind": request.kind,
+            "adapter_warnings": list(adapted.warnings),
+        }
+        if batch_info:
+            meta["batch_id"] = batch_info[0]
+            meta["preset"] = batch_info[1]
+            if batch_info[2]:
+                meta["hint"] = batch_info[2]
+
         with self._decision_lock:
             self._check_proposal_capacity()
             history_id = self.history.record_suggestion(
                 path,
                 filename,
-                metadata={
-                    "detected_language": suggestion.detected_language,
-                    "category": suggestion.category,
-                    "keywords": suggestion.keywords,
-                    "confidence": suggestion.confidence,
-                    "adapter_kind": request.kind,
-                    "adapter_warnings": list(adapted.warnings),
-                },
+                metadata=meta,
             )
             proposal = SuggestionProposal(
                 path,
@@ -303,12 +438,13 @@ class ApplicationCoordinator:
                 path, filename, suggestion.model_copy(deep=True), history_id,
                 source_identity=identity_after,
             )
-        self.notifications.notify_suggestion(
-            filename,
-            on_accept=lambda: self.accept(proposal),
-            on_edit=lambda: self.edit(proposal),
-            on_ignore=lambda: self.ignore(proposal),
-        )
+        if not batch_info:
+            self.notifications.notify_suggestion(
+                filename,
+                on_accept=lambda: self.accept(proposal),
+                on_edit=lambda: self.edit(proposal),
+                on_ignore=lambda: self.ignore(proposal),
+            )
         return proposal
 
     def _check_proposal_capacity(self) -> None:
@@ -349,16 +485,20 @@ class ApplicationCoordinator:
         proposal: SuggestionProposal,
         *,
         edited_stem: str | None = None,
+        notify_desktop: bool = True,
     ) -> HistoryEvent | None:
         """Accept through the same single-decision path used by the UI."""
 
-        return self.accept_proposal(proposal.history_event_id, edited_stem=edited_stem)
+        return self.accept_proposal(
+            proposal.history_event_id, edited_stem=edited_stem, notify_desktop=notify_desktop
+        )
 
     def accept_proposal(
         self,
         event_id: int,
         *,
         edited_stem: str | None = None,
+        notify_desktop: bool = True,
     ) -> HistoryEvent | None:
         """Accept a still-pending ID once, retaining recoverable failures."""
 
@@ -366,10 +506,16 @@ class ApplicationCoordinator:
             proposal = self._pending_proposals.get(event_id)
             if proposal is None:
                 return None
-            return self._accept_pending(proposal, edited_stem=edited_stem)
+            return self._accept_pending(
+                proposal, edited_stem=edited_stem, notify_desktop=notify_desktop
+            )
 
     def _accept_pending(
-        self, proposal: SuggestionProposal, *, edited_stem: str | None,
+        self,
+        proposal: SuggestionProposal,
+        *,
+        edited_stem: str | None,
+        notify_desktop: bool = True,
     ) -> HistoryEvent | None:
         stem = sanitize_stem(
             edited_stem if edited_stem is not None else proposal.suggestion.suggested_stem,
@@ -421,11 +567,12 @@ class ApplicationCoordinator:
         self._pending_proposals.pop(proposal.history_event_id, None)
         target = rename_event.target_path
         assert target is not None
-        self.notifications.notify_renamed(
-            target.name,
-            on_undo=lambda: self.undo(rename_event.id),
-            on_open_folder=lambda: self.open_folder(target),
-        )
+        if notify_desktop:
+            self.notifications.notify_renamed(
+                target.name,
+                on_undo=lambda: self.undo(rename_event.id),
+                on_open_folder=lambda: self.open_folder(target),
+            )
         return rename_event
 
     @staticmethod
@@ -527,6 +674,8 @@ class ApplicationCoordinator:
     def _on_task_change(self, task: QueueTask[SuggestionProposal]) -> None:
         if task.state is not TaskState.FAILED:
             return
+        with self._decision_lock:
+            is_batch_task = task.path in self._batch_options
         with self._failure_lock:
             if task.id in self._failed_task_ids:
                 return
@@ -551,7 +700,8 @@ class ApplicationCoordinator:
                 f"{message}; history logging also failed: "
                 f"{type(history_error).__name__}: {history_error}"
             )
-        self.notifications.notify_error(message)
+        if not is_batch_task:
+            self.notifications.notify_error(message)
 
     def _record_operation_failure(self, path: Path, operation: str, error: Exception) -> None:
         message = f"{type(error).__name__}: {error}"
