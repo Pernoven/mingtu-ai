@@ -1,0 +1,16 @@
+[Unit]
+Description=Mingtu AI local file naming assistant
+After=graphical-session.target
+PartOf=graphical-session.target
+
+[Service]
+Type=exec
+EnvironmentFile=-%h/.config/mingtu-ai/environment
+ExecStart=/usr/bin/env mingtu-ai
+Restart=on-failure
+RestartSec=5s
+TimeoutStopSec=135s
+UMask=0077
+
+[Install]
+WantedBy=graphical-session.target

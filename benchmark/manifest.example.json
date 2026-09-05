@@ -1,0 +1,7 @@
+{
+  "schema_version": 1,
+  "benchmark_id": "mingtu-m0-example",
+  "model_id": "google/gemma-4-E2B-it-qat-q4_0-gguf",
+  "description": "Empty example. Add only authorized local test files under dataset/.",
+  "cases": []
+}

@@ -1,0 +1,32 @@
+[build-system]
+requires = ["setuptools>=77"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "mingtu-ai"
+version = "0.1.0"
+description = "Local-first file naming assistant for KDE Plasma"
+readme = "README.md"
+requires-python = ">=3.13,<3.14"
+classifiers = [
+    "Programming Language :: Python :: 3.13",
+    "Operating System :: POSIX :: Linux",
+]
+dependencies = [
+    "httpx>=0.28,<1",
+    "pydantic>=2.12,<3",
+]
+
+[project.scripts]
+mingtu-ai = "mingtu_ai.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools]
+include-package-data = false
+
+[tool.pytest.ini_options]
+addopts = "-q"
+pythonpath = ["src"]
+testpaths = ["tests"]
