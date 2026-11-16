@@ -320,6 +320,7 @@ class FileAdapterRegistry:
         suffix = source.suffix.casefold()
         fragments: list[str] = []
         total_read = 0
+        unreadable_container = False
 
         try:
             with duplicated_binary_stream(opened.fd) as stream:
@@ -352,6 +353,7 @@ class FileAdapterRegistry:
                         elif fragment:
                             fragments.append(fragment)
         except (OSError, zipfile.BadZipFile, NotImplementedError) as error:
+            unreadable_container = isinstance(error, zipfile.BadZipFile)
             warnings.append(f"Office container could not be read: {_safe_error(error)}")
 
         text, truncated = _bounded_text("\n".join(fragments), self.limits.max_text_chars)
@@ -367,6 +369,7 @@ class FileAdapterRegistry:
             metadata=metadata,
             warnings=tuple(dict.fromkeys(warnings)),
             source_identity=opened.identity,
+            unreadable_office_container=unreadable_container,
         )
 
     @staticmethod

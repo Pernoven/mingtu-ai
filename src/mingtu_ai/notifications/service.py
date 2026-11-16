@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
+from html import escape
 import os
 import shutil
 import subprocess
@@ -416,16 +417,20 @@ class NotificationService:
         self,
         suggested_filename: str,
         *,
+        original_filename: str | None = None,
         on_accept: ActionCallback | None = None,
         on_edit: ActionCallback | None = None,
         on_ignore: ActionCallback | None = None,
     ) -> NotificationReceipt:
         """Show a filename suggestion with accept, edit, and ignore actions."""
 
+        body = f"建議檔名：{escape(suggested_filename, quote=False)}"
+        if original_filename is not None:
+            body = f"原檔：{escape(original_filename, quote=False)}\n{body}"
         return self.show(
             Notification(
                 summary="命圖 AI 檔名建議",
-                body=f"建議檔名：{suggested_filename}",
+                body=body,
                 actions=(
                     NotificationAction("accept", "接受", on_accept),
                     NotificationAction("edit", "修改", on_edit),

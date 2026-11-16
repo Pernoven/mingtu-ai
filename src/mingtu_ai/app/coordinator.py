@@ -12,7 +12,6 @@ from pathlib import Path
 import shutil
 import subprocess
 import threading
-import time
 from typing import Any, Protocol
 import uuid
 
@@ -67,7 +66,7 @@ class PendingProposalSnapshot:
 
 MAX_PENDING_PROPOSALS = 256
 MAX_WATCH_ANALYSIS_RETRIES = 2
-WATCH_RETRY_DEDUP_SECONDS = 2.0
+MAX_WATCHED_VERSIONS = 2048
 
 
 class Provider(Protocol):
@@ -160,7 +159,7 @@ class ApplicationCoordinator:
         self._pending_proposals: dict[int, SuggestionProposal] = {}
         self._batch_options: dict[Path, tuple[str, str, str | None]] = {}
         self._paused = threading.Event()
-        self._recent_watch_retries: OrderedDict[Path, tuple[FileIdentity, float]] = OrderedDict()
+        self._suggested_watch_versions: OrderedDict[Path, FileIdentity] = OrderedDict()
         self._queue: SingleWorkerQueue[Any, SuggestionProposal | None] = SingleWorkerQueue(
             runtime_factory=self._runtime_factory,
             handler=self._analyze,
@@ -386,13 +385,8 @@ class ApplicationCoordinator:
         while True:
             try:
                 identity = self._analysis_identity(path)
-                recent = self._recent_watch_retries.get(path)
-                if recent is not None:
-                    retried_identity, expires_at = recent
-                    # Use admission time so jobs waiting behind another inference
-                    # still coalesce with the retry that completed their version.
-                    if identity == retried_identity and task.created_at <= expires_at:
-                        return None
+                if self._suggested_watch_versions.get(path) == identity:
+                    return None
                 proposal = self._analyze(path, runtime, expected_identity=identity)
             except FileChangedError:
                 if retries_left and wait_until_stable(path):
@@ -402,16 +396,16 @@ class ApplicationCoordinator:
                     return None
                 raise
             break
-        if retries_left < MAX_WATCH_ANALYSIS_RETRIES:
-            self._recent_watch_retries[path] = (identity, time.time() + WATCH_RETRY_DEDUP_SECONDS)
-            self._recent_watch_retries.move_to_end(path)
-            if len(self._recent_watch_retries) > self._queue.max_pending_tasks:
-                self._recent_watch_retries.popitem(last=False)
+        if proposal is not None:
+            self._suggested_watch_versions[path] = identity
+            self._suggested_watch_versions.move_to_end(path)
+            if len(self._suggested_watch_versions) > MAX_WATCHED_VERSIONS:
+                self._suggested_watch_versions.popitem(last=False)
         return proposal
 
     def _analyze(
         self, path: Path, runtime: Any, *, expected_identity: FileIdentity | None = None,
-    ) -> SuggestionProposal:
+    ) -> SuggestionProposal | None:
         with self._decision_lock:
             self._check_proposal_capacity()
             batch_info = self._batch_options.pop(path, None)
@@ -420,6 +414,10 @@ class ApplicationCoordinator:
             authoritative_identity = adapted.source_identity or identity_before
             if authoritative_identity != identity_before:
                 raise FileChangedError("檔案在安全開啟前已變更")
+            if expected_identity is not None and adapted.unreadable_office_container:
+                # Downloaders can close a placeholder before writing the final ZIP.
+                # Leave this version eligible for the next completed write event.
+                return None
             request = AnalysisInput(
                 source_path=adapted.source_path,
                 mime_type=adapted.mime_type,
@@ -481,6 +479,7 @@ class ApplicationCoordinator:
         if not batch_info:
             self.notifications.notify_suggestion(
                 filename,
+                original_filename=path.name,
                 on_accept=lambda: self.accept(proposal),
                 on_edit=lambda: self.edit(proposal),
                 on_ignore=lambda: self.ignore(proposal),

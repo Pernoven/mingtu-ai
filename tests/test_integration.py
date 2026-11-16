@@ -8,6 +8,7 @@ from tempfile import TemporaryDirectory
 import tempfile
 import threading
 import unittest
+import zipfile
 
 from mingtu_ai import AppConfig, NamingSuggestion
 from mingtu_ai.adapters import AdaptedFile, AdapterKind
@@ -16,6 +17,7 @@ from mingtu_ai.history import EventType, HistoryStore
 from mingtu_ai.notifications import NotificationReceipt, NotificationService
 from mingtu_ai.queue import TaskState
 from mingtu_ai.watcher import (
+    EventDeduplicator,
     FileEventMonitor,
     InotifyWatcher,
     OwnedMoveSuppressor,
@@ -81,6 +83,89 @@ class ReadingProvider:
 
 
 class IntegrationTests(unittest.TestCase):
+    @unittest.skipUnless(sys.platform.startswith("linux"), "requires Linux inotify")
+    def test_watch_suggests_each_completed_office_copy_once(self) -> None:
+        with TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            watched = root / "watched"
+            watched.mkdir()
+            template = root / "template.docx"
+            with zipfile.ZipFile(template, "w") as archive:
+                archive.writestr("word/document.xml", "<t>Discussion topics</t>")
+            content = template.read_bytes()
+            first = watched / "report (1).docx"
+            second = watched / "report.docx"
+            stop = threading.Event()
+            replay_seen = threading.Event()
+            delivered = {path.name: threading.Event() for path in (first, second)}
+            reads = []
+
+            class Monitor(FileEventMonitor):
+                first_deliveries = 0
+
+                def poll(self, timeout=None):
+                    paths = super().poll(timeout)
+                    if first in paths:
+                        self.first_deliveries += 1
+                        if self.first_deliveries == 3:
+                            replay_seen.set()
+                    return paths
+
+            class Backend(SilentBackend):
+                def send(self, notification, on_action=None):
+                    receipt = super().send(notification, on_action)
+                    for filename, event in delivered.items():
+                        if notification.body.startswith(f"原檔：{filename}\n"):
+                            event.set()
+                    return receipt
+
+            class Provider:
+                def analyze(self, item):
+                    reads.append((item.source_path, item.text))
+                    return NamingSuggestion(
+                        suggested_stem="Discussion_Topics", detected_language="en",
+                        category="test", keywords=["discussion"], confidence=0.8,
+                    )
+
+            backend = Backend()
+            store = HistoryStore(root / "state" / "history.sqlite3")
+            with InotifyWatcher([watched]) as watcher:
+                first.write_bytes(content[:40])
+                second.write_bytes(content)
+                monitor = Monitor(
+                    watcher, stable_interval=0.005, stable_rounds=1,
+                    deduplicator=EventDeduplicator(ttl=0),
+                )
+                with ApplicationCoordinator(
+                    config=AppConfig(),
+                    watch_directories=[watched],
+                    history=store,
+                    notifications=NotificationService(backend),
+                    runtime_factory=RuntimeTracker().batch,
+                    provider_factory=lambda _: Provider(),
+                    monitor_factory=lambda _: nullcontext(monitor),
+                ) as coordinator, ThreadPoolExecutor(max_workers=1) as executor:
+                    run = executor.submit(coordinator.run_forever, stop)
+                    try:
+                        self.assertTrue(delivered[second.name].wait(5))
+                        self.assertEqual(reads, [(second, "Discussion topics")])
+                        first.write_bytes(content)
+                        self.assertTrue(delivered[first.name].wait(5))
+                        # Close the completed file again without changing its version.
+                        with first.open("ab"):
+                            pass
+                        self.assertTrue(replay_seen.wait(5))
+                    finally:
+                        stop.set()
+                    run.result(timeout=5)
+
+            self.assertEqual(reads, [(second, "Discussion topics"), (first, "Discussion topics")])
+            self.assertEqual(len(backend.notifications), 2)
+            events = store.list_recent()
+            self.assertEqual(len(events), 2)
+            self.assertTrue(all(event.event_type is EventType.SUGGESTION for event in events))
+            self.assertEqual({event.suggested_name for event in events}, {"Discussion_Topics.docx"})
+
     @unittest.skipUnless(sys.platform.startswith("linux"), "requires Linux inotify")
     def test_watch_retries_changed_file_and_only_suggests_the_final_version(self) -> None:
         for second_close in (False, True):

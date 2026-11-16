@@ -60,6 +60,7 @@ class AdaptedFile:
     warnings: tuple[str, ...] = ()
     source_identity: tuple[int, int, int, int] | None = None
     image_file_descriptors: tuple[int | None, ...] = ()
+    unreadable_office_container: bool = False
 
 
 class AdapterError(RuntimeError):
