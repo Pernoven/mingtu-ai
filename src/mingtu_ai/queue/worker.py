@@ -91,6 +91,7 @@ class TaskHandler(Protocol[RuntimeT, ResultT]):
 
 
 TaskCallback = Callable[[QueueTask[ResultT]], None]
+QueuedTaskHandler = Callable[[QueueTask[ResultT], RuntimeT], ResultT]
 
 
 class SingleWorkerQueue(Generic[RuntimeT, ResultT]):
@@ -165,8 +166,8 @@ class SingleWorkerQueue(Generic[RuntimeT, ResultT]):
         self._emit(task)
         return task
 
-    def start(self) -> None:
-        """Start the single background worker if it is not already running."""
+    def start(self, *, handler: QueuedTaskHandler[ResultT, RuntimeT] | None = None) -> None:
+        """Start the background worker, optionally passing the whole task to its handler."""
 
         with self._condition:
             if self._thread is not None and self._thread.is_alive():
@@ -175,6 +176,7 @@ class SingleWorkerQueue(Generic[RuntimeT, ResultT]):
                 raise RuntimeError("queue is stopping")
             self._thread = threading.Thread(
                 target=self._worker,
+                args=(handler,),
                 name=self._thread_name,
                 daemon=True,
             )
@@ -186,7 +188,7 @@ class SingleWorkerQueue(Generic[RuntimeT, ResultT]):
         with self._condition:
             if self._thread is not None and self._thread.is_alive():
                 raise RuntimeError("background worker is already running")
-        return self._drain_one_batch()
+        return self._drain_one_batch(None)
 
     def cancel(self, task_id: str) -> bool:
         """Cancel a pending task and return whether cancellation succeeded."""
@@ -275,7 +277,7 @@ class SingleWorkerQueue(Generic[RuntimeT, ResultT]):
         if wait and thread is not None and thread is not threading.current_thread():
             thread.join(timeout)
 
-    def _worker(self) -> None:
+    def _worker(self, handler: QueuedTaskHandler[ResultT, RuntimeT] | None) -> None:
         while True:
             with self._condition:
                 while not self._pending and not self._stopping:
@@ -283,15 +285,19 @@ class SingleWorkerQueue(Generic[RuntimeT, ResultT]):
                 if not self._pending and self._stopping:
                     self._condition.notify_all()
                     return
-            self._drain_one_batch()
+            self._drain_one_batch(handler)
 
-    def _drain_one_batch(self) -> list[QueueTask[ResultT]]:
+    def _drain_one_batch(
+        self, handler: QueuedTaskHandler[ResultT, RuntimeT] | None,
+    ) -> list[QueueTask[ResultT]]:
         # This second lock also protects callers that invoke ``run_until_idle``
         # concurrently before a background worker exists.
         with self._drain_lock:
-            return self._drain_one_batch_locked()
+            return self._drain_one_batch_locked(handler)
 
-    def _drain_one_batch_locked(self) -> list[QueueTask[ResultT]]:
+    def _drain_one_batch_locked(
+        self, handler: QueuedTaskHandler[ResultT, RuntimeT] | None,
+    ) -> list[QueueTask[ResultT]]:
         with self._condition:
             if not self._pending:
                 return []
@@ -305,7 +311,7 @@ class SingleWorkerQueue(Generic[RuntimeT, ResultT]):
                 with runtime_context as runtime:
                     while task := self._take_next():
                         handled.append(task)
-                        self._run_task(task, runtime)
+                        self._run_task(task, runtime, handler)
             except Exception as error:
                 # Runtime startup/shutdown failure is a batch-level failure.  A
                 # future submission may form a new batch and try again.
@@ -327,9 +333,12 @@ class SingleWorkerQueue(Generic[RuntimeT, ResultT]):
         self._emit(task)
         return task
 
-    def _run_task(self, task: QueueTask[ResultT], runtime: RuntimeT) -> None:
+    def _run_task(
+        self, task: QueueTask[ResultT], runtime: RuntimeT,
+        handler: QueuedTaskHandler[ResultT, RuntimeT] | None,
+    ) -> None:
         try:
-            result = self._handler(task.path, runtime)
+            result = self._handler(task.path, runtime) if handler is None else handler(task, runtime)
         except Exception as error:
             with self._condition:
                 task.error = self._describe_error(error)

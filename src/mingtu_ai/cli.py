@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+from contextlib import ExitStack
 import json
 import os
 from pathlib import Path
@@ -19,6 +20,7 @@ from mingtu_ai.desktop_paths import (
 from mingtu_ai.diagnostics import run_doctor
 from mingtu_ai.history import HistoryStore
 from mingtu_ai.notifications import NotificationService
+from mingtu_ai.runtime.instance import ResidentAlreadyRunning, resident_lock
 from mingtu_ai.ui import NativeUiUnavailable, run_native_ui
 
 
@@ -120,6 +122,8 @@ def build_parser(
         action="store_true",
         help="不啟動選用的 Qt6 系統匣與視窗",
     )
+    parser.add_argument("--start-minimized", action="store_true", help="啟動至系統匣，不開啟主視窗")
+    parser.add_argument("--single-instance", action="store_true", help="常駐模式只允許一個監視程式")
     parser.add_argument("--version", action="version", version=f"%(prog)s {__version__}")
     return parser
 
@@ -226,7 +230,10 @@ def main(
         return report.exit_code
 
     try:
-        with create_coordinator(args, environ=environ) as coordinator:
+        with ExitStack() as stack:
+            if args.single_instance and not (args.once or args.batch):
+                stack.enter_context(resident_lock(environ))
+            coordinator = stack.enter_context(create_coordinator(args, environ=environ))
             if args.once is not None:
                 proposal = coordinator.analyze_once(args.once)
                 payload = {
@@ -272,6 +279,8 @@ def main(
 
             if not args.headless:
                 try:
+                    if args.start_minimized:
+                        return run_native_ui(coordinator, show_windows=False)
                     return run_native_ui(coordinator)
                 except NativeUiUnavailable as exc:
                     print(f"命圖 AI 原生 UI 不可用：{exc}；改以 headless 模式執行。", file=err)
@@ -282,6 +291,12 @@ def main(
             except KeyboardInterrupt:
                 print("\n命圖 AI 已停止。", file=out)
             return 0
+    except KeyboardInterrupt:
+        print("\n命圖 AI 已停止。", file=out)
+        return 0
+    except ResidentAlreadyRunning as exc:
+        print(str(exc), file=out)
+        return 0
     except (ProcessingError, OSError, ValueError, RuntimeError) as exc:
         print(f"命圖 AI 錯誤：{exc}", file=err)
         return 1

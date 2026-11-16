@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections import OrderedDict
 from collections.abc import Callable, Iterator, Sequence
 from contextlib import AbstractContextManager, contextmanager
 from dataclasses import dataclass
@@ -11,13 +12,15 @@ from pathlib import Path
 import shutil
 import subprocess
 import threading
+import time
 from typing import Any, Protocol
 import uuid
 
 from mingtu_ai import (
     AnalysisInput, AppConfig, BatchAnalysisResult, BatchItemProposal, BatchPreset, NamingSuggestion,
 )
-from mingtu_ai.adapters import AdaptedFile, adapt_file
+from mingtu_ai.adapters import AdaptedFile, FileChangedError, adapt_file
+from mingtu_ai.adapters.secure_input import FileIdentity, identity_from_stat
 from mingtu_ai.batch import apply_naming_preset, scan_batch_candidates
 from mingtu_ai.desktop_paths import save_user_watch_directories
 from mingtu_ai.history import (
@@ -35,6 +38,7 @@ from mingtu_ai.watcher import (
     WatchInvalidatedError,
     WatchOverflowError,
     should_ignore,
+    wait_until_stable,
 )
 
 
@@ -62,6 +66,8 @@ class PendingProposalSnapshot:
 
 
 MAX_PENDING_PROPOSALS = 256
+MAX_WATCH_ANALYSIS_RETRIES = 2
+WATCH_RETRY_DEDUP_SECONDS = 2.0
 
 
 class Provider(Protocol):
@@ -154,7 +160,8 @@ class ApplicationCoordinator:
         self._pending_proposals: dict[int, SuggestionProposal] = {}
         self._batch_options: dict[Path, tuple[str, str, str | None]] = {}
         self._paused = threading.Event()
-        self._queue: SingleWorkerQueue[Any, SuggestionProposal] = SingleWorkerQueue(
+        self._recent_watch_retries: OrderedDict[Path, tuple[FileIdentity, float]] = OrderedDict()
+        self._queue: SingleWorkerQueue[Any, SuggestionProposal | None] = SingleWorkerQueue(
             runtime_factory=self._runtime_factory,
             handler=self._analyze,
             on_change=self._on_task_change,
@@ -347,7 +354,7 @@ class ApplicationCoordinator:
         if not self.watch_directories:
             raise ValueError("常駐監控至少需要一個目錄")
         stopper = stop_event or threading.Event()
-        self._queue.start()
+        self._queue.start(handler=self._analyze_watched)
         try:
             with self._monitor_factory(self.watch_directories) as monitor:
                 self._active_monitor = monitor
@@ -371,15 +378,48 @@ class ApplicationCoordinator:
         self._queue.stop(wait=True, drain=True)
         self.notifications.close()
 
-    def _analyze(self, path: Path, runtime: Any) -> SuggestionProposal:
+    def _analyze_watched(
+        self, task: QueueTask[SuggestionProposal | None], runtime: Any,
+    ) -> SuggestionProposal | None:
+        path = task.path
+        retries_left = MAX_WATCH_ANALYSIS_RETRIES
+        while True:
+            try:
+                identity = self._analysis_identity(path)
+                recent = self._recent_watch_retries.get(path)
+                if recent is not None:
+                    retried_identity, expires_at = recent
+                    # Use admission time so jobs waiting behind another inference
+                    # still coalesce with the retry that completed their version.
+                    if identity == retried_identity and task.created_at <= expires_at:
+                        return None
+                proposal = self._analyze(path, runtime, expected_identity=identity)
+            except FileChangedError:
+                if retries_left and wait_until_stable(path):
+                    retries_left -= 1
+                    continue
+                if should_ignore(path):
+                    return None
+                raise
+            break
+        if retries_left < MAX_WATCH_ANALYSIS_RETRIES:
+            self._recent_watch_retries[path] = (identity, time.time() + WATCH_RETRY_DEDUP_SECONDS)
+            self._recent_watch_retries.move_to_end(path)
+            if len(self._recent_watch_retries) > self._queue.max_pending_tasks:
+                self._recent_watch_retries.popitem(last=False)
+        return proposal
+
+    def _analyze(
+        self, path: Path, runtime: Any, *, expected_identity: FileIdentity | None = None,
+    ) -> SuggestionProposal:
         with self._decision_lock:
             self._check_proposal_capacity()
             batch_info = self._batch_options.pop(path, None)
-        identity_before = self._source_identity(path)
+        identity_before = expected_identity or self._analysis_identity(path)
         with self._adapter_factory(path) as adapted:
             authoritative_identity = adapted.source_identity or identity_before
             if authoritative_identity != identity_before:
-                raise ProcessingError("檔案在安全開啟前已被取代，請重試")
+                raise FileChangedError("檔案在安全開啟前已變更")
             request = AnalysisInput(
                 source_path=adapted.source_path,
                 mime_type=adapted.mime_type,
@@ -392,9 +432,9 @@ class ApplicationCoordinator:
             provider = self._provider_factory(runtime)
             with _provider_scope(provider) as scoped_provider:
                 suggestion = scoped_provider.analyze(request)
-        identity_after = self._source_identity(path)
+        identity_after = self._analysis_identity(path)
         if identity_after != authoritative_identity:
-            raise ProcessingError("檔案在分析期間已變更，請重試")
+            raise FileChangedError("檔案在分析期間已變更")
 
         safe_stem = sanitize_stem(suggestion.suggested_stem, fallback=path.stem)
         if batch_info and batch_info[1] != BatchPreset.DEFAULT:
@@ -576,9 +616,14 @@ class ApplicationCoordinator:
         return rename_event
 
     @staticmethod
-    def _source_identity(path: Path) -> tuple[int, int, int, int]:
-        info = path.stat(follow_symlinks=False)
-        return (info.st_dev, info.st_ino, info.st_size, info.st_mtime_ns)
+    def _source_identity(path: Path) -> FileIdentity:
+        return identity_from_stat(path.lstat())
+
+    def _analysis_identity(self, path: Path) -> FileIdentity:
+        try:
+            return self._source_identity(path)
+        except FileNotFoundError as error:
+            raise FileChangedError("檔案已移動或移除") from error
 
     def edit(self, proposal: SuggestionProposal) -> HistoryEvent | None:
         with self._decision_lock:
@@ -671,7 +716,7 @@ class ApplicationCoordinator:
         except Exception as exc:
             self._record_operation_failure(renamed_path, "open-folder", exc)
 
-    def _on_task_change(self, task: QueueTask[SuggestionProposal]) -> None:
+    def _on_task_change(self, task: QueueTask[SuggestionProposal | None]) -> None:
         if task.state is not TaskState.FAILED:
             return
         with self._decision_lock:

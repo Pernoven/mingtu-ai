@@ -6,8 +6,4 @@ builtin cd "$repo_dir"; or exit 1
 set -x MINGTU_AI_MODEL "/home/knox/large models/gemma-4-E4B-it-Q4_K_M.gguf"
 set -x MINGTU_AI_MMPROJ "/home/knox/large models/gemma-4-E4B-it-mmproj.gguf"
 
-if test (count $argv) -eq 0
-    exec ./scripts/dev-run.fish --watch "/home/knox/圖片/螢幕截圖"
-else
-    exec ./scripts/dev-run.fish $argv
-end
+exec ./scripts/dev-run.fish --single-instance $argv

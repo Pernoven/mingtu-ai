@@ -125,7 +125,10 @@ mingtu-ai --doctor --json        # 結構化診斷
 mingtu-ai --resolve-ollama MODEL # 唯讀檢查 Ollama reference 與 blob
 mingtu-ai --resolve-ollama MODEL --json
 mingtu-ai --headless             # 常駐監控，強制不用原生 Qt UI
+mingtu-ai --single-instance --start-minimized # 僅啟動一個系統匣監視器
 ```
+
+KDE 登入後自動啟動：以目前可用的 Python 3.13 執行 `python scripts/install-autostart.py --model /path/to/model.gguf --mmproj /path/to/mmproj.gguf`。腳本固定 Python 路徑、沿用已儲存監控資料夾，並提供 `--dry-run` 預覽與 `--remove` 停用。詳見 [登入啟動設定](docs/packaging.md#開發-checkout-的-kde-登入啟動)。
 
 ## 不變的安全界線
 

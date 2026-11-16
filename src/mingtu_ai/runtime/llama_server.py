@@ -8,6 +8,7 @@ import ipaddress
 import os
 from pathlib import Path
 import re
+import shutil
 import socket
 import subprocess
 import threading
@@ -181,6 +182,10 @@ class LlamaServerRuntime:
             str(self.config.context_size),
             "--n-gpu-layers",
             str(self.config.n_gpu_layers),
+            "--parallel",
+            "1",
+            "--fit",
+            "on",
             "--jinja",
             "--reasoning",
             "off",
@@ -191,8 +196,36 @@ class LlamaServerRuntime:
         ]
         if self.config.mmproj_path is not None:
             command.extend(("--mmproj", str(self.config.mmproj_path)))
+            if not self._offload_projector():
+                command.append("--no-mmproj-offload")
         command.extend(self.config.extra_args)
         return tuple(command)
+
+    def _offload_projector(self) -> bool:
+        """Keep the projector on CPU when current VRAM cannot fit the models.
+
+        llama.cpp fits the language model automatically, but its projector
+        memory probe can itself abort on a busy GPU. Query once per model start,
+        never from the resident's idle loop. Unsupported probes use CPU.
+        """
+        if self.config.mmproj_offload != "auto":
+            return self.config.mmproj_offload
+        if self.config.n_gpu_layers == 0:
+            return False
+        binary = shutil.which("nvidia-smi")
+        if binary is None:
+            return False
+        try:
+            result = subprocess.run(
+                [binary, "--query-gpu=memory.free", "--format=csv,noheader,nounits"],
+                stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=2,
+                check=True,
+            )
+            available = int(result.stdout.splitlines()[0].strip()) * 1024 * 1024
+            required = self.config.model_path.stat().st_size + self.config.mmproj_path.stat().st_size
+            return available >= required + 1024 * 1024 * 1024
+        except (OSError, ValueError, IndexError, subprocess.SubprocessError):
+            return False
 
     def ensure_started(self) -> None:
         """Start the child if needed and wait for an explicit healthy response."""

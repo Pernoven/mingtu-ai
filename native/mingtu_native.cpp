@@ -987,13 +987,32 @@ PyObject *native_run(PyObject *, PyObject *args, PyObject *kwargs) {
             QTimer::singleShot(quit_after_ms, [&dashboard]() { dashboard.request_quit(); });
         }
 
+        PyObject *signal_error = nullptr;
+        QTimer sigint_timer;
+        QObject::connect(&sigint_timer, &QTimer::timeout, [&dashboard, &signal_error]() {
+            PyGILState_STATE gstate = PyGILState_Ensure();
+            if (PyErr_CheckSignals() != 0) {
+                // The controller cleanup calls Python and needs a clear error state.
+                signal_error = PyErr_GetRaisedException();
+                dashboard.request_quit();
+            }
+            PyGILState_Release(gstate);
+        });
+        sigint_timer.start(200);
+
         int exit_code = 0;
         Py_BEGIN_ALLOW_THREADS
         exit_code = application.exec();
         Py_END_ALLOW_THREADS
 
+        sigint_timer.stop();
+
         bridge->dashboard = nullptr;
         Py_DECREF(bridge);
+        if (signal_error != nullptr) {
+            PyErr_SetRaisedException(signal_error);
+            return nullptr;
+        }
         return PyLong_FromLong(exit_code);
     } catch (const std::exception &error) {
         PyErr_SetString(PyExc_RuntimeError, error.what());

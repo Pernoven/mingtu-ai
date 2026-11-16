@@ -7,7 +7,7 @@ the managed server always listens on ``127.0.0.1:3001``.
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Literal
+from typing import Annotated, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
@@ -64,7 +64,8 @@ class LlamaServerConfig(BaseModel):
     port: Literal[3001] = 3001
     model_alias: str = Field(default="local-gemma", min_length=1, max_length=80)
     context_size: int = Field(default=8192, ge=512, le=262_144)
-    n_gpu_layers: int = Field(default=99, ge=0, le=999)
+    n_gpu_layers: Annotated[int, Field(ge=0, le=999)] | Literal["auto", "all"] = "auto"
+    mmproj_offload: bool | Literal["auto"] = "auto"
     health_timeout_seconds: float = Field(default=180.0, gt=0.0, le=900.0)
     health_poll_seconds: float = Field(default=0.25, gt=0.0, le=5.0)
     stop_timeout_seconds: float = Field(default=10.0, gt=0.0, le=60.0)

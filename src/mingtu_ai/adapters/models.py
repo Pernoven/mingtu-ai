@@ -64,3 +64,7 @@ class AdaptedFile:
 
 class AdapterError(RuntimeError):
     """A local input could not be adapted within the security boundaries."""
+
+
+class FileChangedError(AdapterError):
+    """The input snapshot became invalid before analysis finished."""

@@ -1,6 +1,30 @@
 # Python 發行、systemd user service 與 KDE autostart 資產
 
-`packaging/` 是審查用資產，不是 installer。Repository 內沒有任何 script 會自動 copy、enable、start 或修改 KDE 設定。
+`packaging/` 是審查用資產，不會因執行命圖而自動安裝。開發 checkout 另外提供明確執行才寫入設定的 `scripts/install-autostart.py`，供使用者選擇在 KDE 登入後啟動。
+
+## 開發 checkout 的 KDE 登入啟動
+
+以已有依賴及 Qt extension 的 Python 3.13 執行；不會下載或安裝套件：
+
+```fish
+# 先檢查並預覽；python 必須是平常能啟動命圖的 3.13 environment
+python scripts/install-autostart.py --dry-run --model /path/to/model.gguf --mmproj /path/to/mmproj.gguf
+
+# 寫入目前使用者的 XDG autostart 設定
+python scripts/install-autostart.py --model /path/to/model.gguf --mmproj /path/to/mmproj.gguf
+```
+
+腳本會固定目前 Python 的絕對路徑，避免 KDE 登入環境選到另一個 Python ABI。啟動入口為 checkout 的 `scripts/start-resident.py`，所以請保留 checkout、Python environment 與模型的路徑。登入後只顯示系統匣；主視窗可從系統匣開啟。若系統匣不可用，Qt 會顯示主視窗，避免程式無法操作。這是登入圖形桌面後啟動，不是登入前的系統服務。
+
+監控目錄沿用命圖的既有設定（`MINGTU_AI_WATCH_DIRS`、已儲存資料夾或系統預設）；不會掃描登入前已存在的檔案。安裝腳本會先檢查目錄、模型可讀性、Python/Qt import 及可用的 desktop-file validator。更新本工具管理的 entry 時先備份；其他來源的同名 entry 保留並報錯。
+
+`start-resident.py` 及 `./run` 使用同一個 Linux `flock`，避免重複常駐。鎖在退出或當機時由 kernel 釋放；不要手動刪除鎖檔。直接使用 console command 時可加 `--single-instance --start-minimized`。一次性分析與批次命名不受常駐鎖阻擋。請勿同時啟用另一套命圖 systemd service。
+
+移除下次登入的啟動設定（目前的程式可從系統匣選「離開」）：
+
+```fish
+python scripts/install-autostart.py --remove
+```
 
 ## Python 發行模型
 
@@ -47,7 +71,7 @@ Release 時應從新產生的 sdist build wheel，再在不含 source checkout �
 
 ## systemd user service（人工流程）
 
-下列指令會寫入使用者設定並啟用 service，只能在使用者審查 unit 並明確決定後手動執行。本專案不會代為執行。
+下列指令會寫入使用者設定並啟用 service，僅在使用者決定使用這套方案時執行。若已使用上方 KDE autostart 腳本，請勿再啟用 service。
 
 ```fish
 # 會修改 user configuration：先審查，再由你本人執行

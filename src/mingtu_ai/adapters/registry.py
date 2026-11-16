@@ -17,7 +17,7 @@ from tempfile import TemporaryDirectory
 import zipfile
 import xml.etree.ElementTree as ET
 
-from .models import AdaptedFile, AdapterError, AdapterKind, AdapterLimits
+from .models import AdaptedFile, AdapterError, AdapterKind, AdapterLimits, FileChangedError
 from .secure_input import (
     BoundedReadProxy,
     OpenedRegularFile,
@@ -143,13 +143,13 @@ class FileAdapterRegistry:
                         opened.current_identity() != opened.identity
                         or not opened.path_matches_identity()
                     ):
-                        raise AdapterError("file changed while it was being adapted")
+                        raise FileChangedError("file changed while it was being adapted")
                     yield adapted
                     if (
                         opened.current_identity() != opened.identity
                         or not opened.path_matches_identity()
                     ):
-                        raise AdapterError("file changed while it was being analyzed")
+                        raise FileChangedError("file changed while it was being analyzed")
         except AdapterError:
             raise
         except OSError as error:

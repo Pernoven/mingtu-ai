@@ -1,7 +1,9 @@
 from __future__ import annotations
 
-from contextlib import contextmanager
+from concurrent.futures import ThreadPoolExecutor
+from contextlib import contextmanager, nullcontext
 from pathlib import Path
+import sys
 from tempfile import TemporaryDirectory
 import tempfile
 import threading
@@ -79,6 +81,124 @@ class ReadingProvider:
 
 
 class IntegrationTests(unittest.TestCase):
+    @unittest.skipUnless(sys.platform.startswith("linux"), "requires Linux inotify")
+    def test_watch_retries_changed_file_and_only_suggests_the_final_version(self) -> None:
+        for second_close in (False, True):
+            with self.subTest(second_close=second_close), TemporaryDirectory() as temporary:
+                root = Path(temporary)
+                watched = root / "watched"
+                watched.mkdir()
+                source = watched / "incoming.txt"
+                new_version_ready = threading.Event()
+                notification_sent = threading.Event()
+                stop = threading.Event()
+                reads = []
+
+                class ObservedMonitor(FileEventMonitor):
+                    deliveries = 0
+
+                    def poll(self, timeout=None):
+                        paths = super().poll(timeout)
+                        if source in paths:
+                            self.deliveries += 1
+                            if self.deliveries == 2:
+                                new_version_ready.set()
+                        return paths
+
+                class Backend(SilentBackend):
+                    def send(self, notification, on_action=None):
+                        receipt = super().send(notification, on_action)
+                        notification_sent.set()
+                        return receipt
+
+                class Provider:
+                    def analyze(self, item):
+                        reads.append(item.text)
+                        if len(reads) == 1:
+                            if second_close:
+                                source.write_text("completed content")
+                                if not new_version_ready.wait(3):
+                                    raise AssertionError("monitor did not observe the second close")
+                            else:
+                                writer.write("completed content")
+                                writer.flush()
+                        return NamingSuggestion(
+                            suggested_stem=item.text, detected_language="en",
+                            category="test", keywords=["test"], confidence=0.8,
+                        )
+
+                backend = Backend()
+                store = HistoryStore(root / "state" / "history.sqlite3")
+                with InotifyWatcher([watched]) as watcher:
+                    source.write_text("partial")
+                    monitor = ObservedMonitor(watcher, stable_interval=0.005, stable_rounds=1)
+                    with source.open("r+") as writer, ApplicationCoordinator(
+                        config=AppConfig(),
+                        watch_directories=[watched],
+                        history=store,
+                        notifications=NotificationService(backend),
+                        runtime_factory=RuntimeTracker().batch,
+                        provider_factory=lambda _: Provider(),
+                        monitor_factory=lambda _: nullcontext(monitor),
+                    ) as coordinator, ThreadPoolExecutor(max_workers=1) as executor:
+                        run = executor.submit(coordinator.run_forever, stop)
+                        try:
+                            self.assertTrue(notification_sent.wait(5))
+                        finally:
+                            stop.set()
+                        run.result(timeout=5)
+
+                self.assertEqual(monitor.deliveries, 2 if second_close else 1)
+                self.assertEqual(reads, ["partial", "completed content"])
+                self.assertEqual(len(backend.notifications), 1)
+                event, = store.list_recent()
+                self.assertIs(event.event_type, EventType.SUGGESTION)
+                self.assertIn("completed", event.suggested_name or "")
+                self.assertEqual(source.read_text(), "completed content")
+
+    @unittest.skipUnless(sys.platform.startswith("linux"), "requires Linux file adapters")
+    def test_watch_reports_failure_after_bounded_file_change_retries(self) -> None:
+        with TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            source = root / "incoming.txt"
+            source.write_text("writing")
+            stop = threading.Event()
+
+            class Monitor:
+                def poll(self, timeout=None):
+                    stop.set()
+                    return [source]
+
+            attempts = []
+
+            class Provider:
+                def analyze(self, item):
+                    attempts.append(item.text)
+                    source.write_text(item.text + "!")
+                    return NamingSuggestion(
+                        suggested_stem="writing", detected_language="en",
+                        category="test", keywords=["test"], confidence=0.8,
+                    )
+
+            backend = SilentBackend()
+            store = HistoryStore(root / "state" / "history.sqlite3")
+            with ApplicationCoordinator(
+                config=AppConfig(),
+                watch_directories=[root],
+                history=store,
+                notifications=NotificationService(backend),
+                runtime_factory=RuntimeTracker().batch,
+                provider_factory=lambda _: Provider(),
+                monitor_factory=lambda _: nullcontext(Monitor()),
+            ) as coordinator:
+                coordinator.run_forever(stop)
+
+            self.assertEqual(attempts, ["writing", "writing!", "writing!!"])
+            self.assertEqual(len(backend.notifications), 1)
+            event, = store.list_recent()
+            self.assertIs(event.event_type, EventType.FAILURE)
+            self.assertIn("FileChangedError", event.message or "")
+
     def test_admission_storm_records_failures_without_crashing_monitor(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)

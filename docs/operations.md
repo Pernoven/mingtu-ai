@@ -57,6 +57,22 @@ Extension 與執行 build 的 Python ABI 綁定。若它不存在、無法 load 
 
 以 `Ctrl+C` 正常結束。佇列會嘗試完成已接受工作，然後關閉自己的 model child 與 notification helper。不要用 `pkill llama-server`、`killall` 或根據 port 清理；這些作法可能傷害他人的工作。
 
+登入 KDE 後自動常駐可使用 [開發 checkout 的登入啟動腳本](packaging.md#開發-checkout-的-kde-登入啟動)。它會使用目前 Python 3.13 的絕對路徑、啟動至系統匣並取得常駐鎖。監控沿用已儲存的資料夾，並在新增檔案時才按需載入模型。
+
+Linux 監視器會同時檢查最多 2,048 個候選檔案的大小、mtime 與 inode，預設每 150 ms 檢查一次、連續兩輪不變才送入分析；單檔最多等待 5 秒。慢速寫入不會阻擋已穩定的檔案，跨 poll 保留未完成候選，並持續讀取 inotify。超出候選上限會明確停止並回報 `WatchOverflowError`，避免無聲遺失工作。它只監控選定資料夾的直接子檔案，不遞迴掃描。
+
+若檔案在分析途中變更，常駐程式會捨棄過時結果，等檔案穩定後最多重試兩次。重試成功時，同一檔案版本只送出一則建議。若仍有檔案可處理但重試失敗，才會顯示這次分析的錯誤。
+
+系統匣介面待命時每秒檢查狀態，處理中每 250 ms 檢查；只在狀態變更時傳送 Qt 更新。歷史紀錄在操作／佇列狀態變更時刷新，待命時最多每 5 秒查詢一次。使用者操作執行緒待命時阻塞等待，不再每秒喚醒 10 次。可用下列腳本驗證 32 檔穩定等待、待命耗用與真實本機圖片分析；只建立暫存合成檔案：
+
+```fish
+python scripts/verify_resident.py --model /path/to/model.gguf --mmproj /path/to/mmproj.gguf --output /tmp/mingtu-resident-result.json
+```
+
+命名模型預設使用 llama.cpp 的 `--n-gpu-layers auto --fit on --parallel 1`，由引擎依可用記憶體配置單一工作槽。啟動模型時才查詢 NVIDIA 的空閒 VRAM；若不足以容納模型、projector 檔案大小加 1 GiB 餘裕，或無法可靠查詢，projector 會使用 CPU，避免在 GPU 很忙時因載入圖片編碼器而中止。這個檔案大小比較只是保守的啟發式，不能保證面對其他程式同時配置 VRAM 時永不 OOM；CPU 圖片處理也會較慢。Python 設定仍可明確指定 GPU 層數及 `mmproj_offload`。
+
+參數依據：[llama.cpp server](https://github.com/ggml-org/llama.cpp/blob/master/tools/server/README.md)、[NVIDIA nvidia-smi](https://docs.nvidia.com/deploy/nvidia-smi/index.html)。
+
 檔案短時間大量進入時，daemon 會保留最多 256 個 pending tasks，不會無限擴張佇列。超過上限的每個檔案會成為明確的 `FAILED` task，history 的 `analysis` failure 與 stderr/desktop error 可看到 `QueueCapacityError`；monitor 會繼續輪詢後續事件。這是 overload admission policy，不是 inotify overflow；只有 kernel 已報告 overflow 時才需停止 monitor 並重新驗證。
 
 Plasma action 通知預設最多同時保留 32 組 `notify-send` child/collector thread。達限的通知不會再啟動程序，會直接顯示 stderr fallback；這可能表示大量未操作的 persistent notifications。Backend close 預設共用 5 秒 deadline，會終止、必要時 kill，並 reap 只由它啟動的 children。

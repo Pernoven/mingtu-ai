@@ -59,12 +59,13 @@ class NativeUiController:
         self._stop_lock = threading.Lock()
         self._stopped = False
         self._action_thread: threading.Thread | None = None
-        self._actions: queue.Queue[tuple[str, int, str | None]] = queue.Queue(maxsize=1)
+        self._actions: queue.Queue[tuple | None] = queue.Queue(maxsize=1)
         self._action_lock = threading.Lock()
         self._action_busy = False
         self._history_cache_key: tuple[object, ...] | None = None
         self._history_cache_json = "[]"
         self._history_cache_time = 0.0
+        self._refresh_event = threading.Event()
 
     def start(self, bridge: NativeBridge) -> None:
         """Called once by Qt before entering its main-thread event loop."""
@@ -163,6 +164,10 @@ class NativeUiController:
         """Serialize all stop signals with action admission."""
         with self._action_lock:
             self._stop_event.set()
+            try:
+                self._actions.put_nowait(None)
+            except queue.Full:
+                pass  # The admitted action will drain before the thread exits.
 
     def _run_monitor(self) -> None:
         try:
@@ -243,12 +248,12 @@ class NativeUiController:
 
     def _run_actions(self) -> None:
         while not self._stop_event.is_set() or not self._actions.empty():
-            try:
-                item = self._actions.get(timeout=0.1)
-                action, event_id, edited_stem = item[0], item[1], item[2]
-                extra = item[3] if len(item) > 3 else None
-            except queue.Empty:
-                continue
+            item = self._actions.get()
+            if item is None:
+                self._actions.task_done()
+                return
+            action, event_id, edited_stem = item[0], item[1], item[2]
+            extra = item[3] if len(item) > 3 else None
             try:
                 if action == "batch_analyze" and extra:
                     batch_res = self.coordinator.analyze_batch(
@@ -296,6 +301,7 @@ class NativeUiController:
                 message = f"操作失敗：{type(exc).__name__}: {exc}"
             finally:
                 self._actions.task_done()
+                self._refresh_event.set()
             bridge = self._bridge
             if bridge is not None:
                 try:
@@ -312,18 +318,30 @@ class NativeUiController:
 
     def _publish_status(self) -> None:
         last_error: str | None = None
+        published: dict[str, object] = {}
+        history_due = 0.0
         while not self._stop_event.is_set():
             bridge = self._bridge
+            active = self.coordinator.is_active
             if bridge is not None:
                 try:
-                    bridge.set_pending_count(self.coordinator.pending_count)
-                    bridge.set_paused(self.coordinator.is_paused)
-                    bridge.set_model_status(
-                        "處理中" if self.coordinator.is_active else "待命（有工作時按需載入）"
-                    )
-                    bridge.set_proposals_json(self._proposals_json())
-                    bridge.set_history_json(self._history_json())
-                    bridge.set_watch_directories_json(self._watch_directories_json())
+                    values = {
+                        "pending_count": self.coordinator.pending_count,
+                        "paused": self.coordinator.is_paused,
+                        "model_status": "處理中" if active else "待命（有工作時按需載入）",
+                        "proposals_json": self._proposals_json(),
+                        "watch_directories_json": self._watch_directories_json(),
+                    }
+                    changed = any(published.get(key) != value for key, value in values.items())
+                    refresh = self._refresh_event.is_set()
+                    self._refresh_event.clear()
+                    if changed or refresh or time.monotonic() >= history_due:
+                        values["history_json"] = self._history_json()
+                        history_due = time.monotonic() + 5.0
+                    for key, value in values.items():
+                        if published.get(key) != value:
+                            getattr(bridge, f"set_{key}")(value)
+                            published[key] = value
                     last_error = None
                 except Exception as exc:
                     # A failed history query must remain visible, and must not
@@ -336,7 +354,7 @@ class NativeUiController:
                         except RuntimeError:
                             return
                     last_error = message
-            self._stop_event.wait(0.25)
+            self._stop_event.wait(0.25 if active else 1.0)
 
     def _proposals_json(self) -> str:
         return json.dumps([

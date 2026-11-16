@@ -11,9 +11,10 @@ from pathlib import Path
 import select
 import struct
 import sys
+import time
 from types import TracebackType
 
-from .policy import EventDeduplicator, OwnedMoveSuppressor, should_ignore, wait_until_stable
+from .policy import EventDeduplicator, OwnedMoveSuppressor, _snapshot, should_ignore
 
 
 IN_CLOSE_WRITE = 0x00000008
@@ -219,6 +220,14 @@ class InotifyWatcher:
         self.close()
 
 
+@dataclass(slots=True)
+class _SettlingFile:
+    snapshot: tuple[int, int, int, int]
+    deadline: float
+    next_check: float
+    unchanged: int = 0
+
+
 class FileEventMonitor:
     """Turn low-level events into stable, unique, eligible file paths."""
 
@@ -231,21 +240,53 @@ class FileEventMonitor:
         stable_timeout: float = 5.0,
         deduplicator: EventDeduplicator | None = None,
         owned_moves: OwnedMoveSuppressor | None = None,
+        max_settling_files: int = 2048,
     ) -> None:
+        if stable_interval < 0 or stable_timeout < 0 or stable_rounds < 1:
+            raise ValueError("invalid file stability limits")
+        if max_settling_files < 1:
+            raise ValueError("max_settling_files must be positive")
         self.watcher = watcher
         self.stable_interval = stable_interval
         self.stable_rounds = stable_rounds
         self.stable_timeout = stable_timeout
         self.deduplicator = deduplicator or EventDeduplicator()
         self.owned_moves = owned_moves or OwnedMoveSuppressor()
+        self._settling: dict[Path, _SettlingFile] = {}
+        self._max_settling_files = max_settling_files
 
     def poll(self, timeout: float | None = None) -> list[Path]:
-        ready: list[Path] = []
-        for event in self.watcher.read_events(timeout):
+        """Settle files together while continuing to drain kernel events.
+
+        A slow writer no longer blocks ready peers. Unfinished candidates survive
+        the caller's poll timeout, but never beyond their own stability deadline.
+        """
+        if timeout is not None and timeout < 0:
+            raise ValueError("timeout must be non-negative or None")
+        deadline = None if timeout is None else time.monotonic() + timeout
+        while True:
+            now = time.monotonic()
+            wait = None if deadline is None else max(0.0, deadline - now)
+            if self._settling:
+                due = min(min(item.next_check, item.deadline) for item in self._settling.values())
+                wait = max(0.0, due - now) if wait is None else min(wait, max(0.0, due - now))
+            events = self.watcher.read_events(wait)
+            self._observe(events)
+            ready = self._collect_ready()
+            if ready or not self._settling:
+                return ready
+            if deadline is not None and time.monotonic() >= deadline:
+                return []
+
+    def _observe(self, events: Iterable[InotifyEvent]) -> None:
+        now = time.monotonic()
+        for event in events:
             if event.mask & IN_Q_OVERFLOW:
+                self._settling.clear()
                 self.owned_moves.clear()
                 raise WatchOverflowError("inotify event queue overflowed")
             if event.mask & IN_IGNORED:
+                self._settling.clear()
                 self.owned_moves.clear()
                 directory = event.watch_directory
                 detail = f": {directory}" if directory is not None else ""
@@ -263,14 +304,34 @@ class FileEventMonitor:
                 continue
             if not event.is_ready_file or path is None or should_ignore(path):
                 continue
-            if not wait_until_stable(
-                path,
-                interval=self.stable_interval,
-                stable_rounds=self.stable_rounds,
-                timeout=self.stable_timeout,
-            ):
+            snapshot = _snapshot(path)
+            if snapshot is None or path in self._settling:
                 continue
-            if self.deduplicator.is_duplicate(path):
+            if len(self._settling) >= self._max_settling_files:
+                self._settling.clear()
+                self.owned_moves.clear()
+                raise WatchOverflowError("file stability buffer capacity exceeded")
+            self._settling[path] = _SettlingFile(
+                snapshot, now + self.stable_timeout, now + self.stable_interval,
+            )
+
+    def _collect_ready(self) -> list[Path]:
+        ready: list[Path] = []
+        now = time.monotonic()
+        for path, item in tuple(self._settling.items()):
+            if now < min(item.next_check, item.deadline):
                 continue
-            ready.append(path)
+            current = _snapshot(path)
+            if current is None:
+                del self._settling[path]
+                continue
+            item.unchanged = item.unchanged + 1 if current == item.snapshot else 0
+            item.snapshot = current
+            item.next_check = now + self.stable_interval
+            if item.unchanged >= self.stable_rounds:
+                del self._settling[path]
+                if not self.deduplicator.is_duplicate(path):
+                    ready.append(path)
+            elif now >= item.deadline:
+                del self._settling[path]
         return ready

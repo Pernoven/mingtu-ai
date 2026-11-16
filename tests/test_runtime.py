@@ -79,6 +79,30 @@ class RuntimeTests(unittest.TestCase):
         with self.assertRaises(ValidationError):
             LlamaServerConfig(extra_args=("--vision-gemma-4b-default",))
 
+    def test_single_worker_uses_one_slot_and_auto_fit_by_default(self) -> None:
+        command = LlamaServerRuntime(LlamaServerConfig(model_path=Path("model.gguf"))).command
+        self.assertEqual(command[command.index("--n-gpu-layers") + 1], "auto")
+        self.assertEqual(command[command.index("--parallel") + 1], "1")
+        self.assertEqual(command[command.index("--fit") + 1], "on")
+        with self.assertRaises(ValidationError):
+            LlamaServerConfig(n_gpu_layers=-1)
+
+    def test_busy_gpu_keeps_projector_on_cpu_without_forcing_gpu_layers(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            projector = root / "mmproj.gguf"
+            projector.write_bytes(b"GGUF")
+            config = self._config(root, mmproj_path=projector)
+            runtime = LlamaServerRuntime(config)
+            with patch("mingtu_ai.runtime.llama_server.shutil.which", return_value="nvidia-smi"), patch("mingtu_ai.runtime.llama_server.subprocess.run", return_value=Mock(stdout="512\n")):
+                self.assertIn("--no-mmproj-offload", runtime.command)
+            with patch("mingtu_ai.runtime.llama_server.shutil.which", return_value="nvidia-smi"), patch("mingtu_ai.runtime.llama_server.subprocess.run", return_value=Mock(stdout="8192\n")):
+                self.assertNotIn("--no-mmproj-offload", runtime.command)
+            config.mmproj_offload = False
+            with patch("mingtu_ai.runtime.llama_server.subprocess.run") as probe:
+                self.assertIn("--no-mmproj-offload", runtime.command)
+                probe.assert_not_called()
+
     def test_occupied_port_only_reports_and_never_spawns(self) -> None:
         runtime = LlamaServerRuntime(LlamaServerConfig(model_path=Path("model.gguf")))
         fake_socket = Mock()

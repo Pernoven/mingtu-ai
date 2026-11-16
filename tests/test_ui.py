@@ -311,6 +311,50 @@ class NativeUiTests(unittest.TestCase):
         controller._history_json()
         self.assertEqual(checks, [8, 8])
 
+    def test_idle_status_avoids_repeated_database_and_bridge_work(self) -> None:
+        coordinator = FakeCoordinator()
+        controller = NativeUiController(coordinator)
+        bridge = RecordingBridge()
+        controller._bridge = bridge
+        reads = []
+        coordinator.history.list_recent = lambda limit=100: reads.append(limit) or []
+        ticks = [0.0]
+
+        class Stopper:
+            def is_set(self):
+                return ticks[0] >= 6
+
+            def wait(self, timeout):
+                ticks[0] += timeout
+
+        controller._stop_event = Stopper()
+        with patch("mingtu_ai.ui.native.time.monotonic", side_effect=lambda: ticks[0]):
+            controller._publish_status()
+        self.assertEqual(len(reads), 2)  # Initial snapshot and the 5-second refresh.
+        self.assertEqual(len(bridge.history), 1)
+        self.assertEqual(len(bridge.proposals), 1)
+
+    def test_action_invalidates_history_before_idle_refresh_deadline(self) -> None:
+        coordinator = FakeCoordinator()
+        controller = NativeUiController(coordinator)
+        controller._bridge = RecordingBridge()
+        reads = []
+        coordinator.history.list_recent = lambda limit=100: reads.append(limit) or []
+        ticks = [0.0]
+
+        class Stopper:
+            def is_set(self):
+                return ticks[0] >= 2
+
+            def wait(self, timeout):
+                ticks[0] += timeout
+                controller._refresh_event.set()
+
+        controller._stop_event = Stopper()
+        with patch("mingtu_ai.ui.native.time.monotonic", side_effect=lambda: ticks[0]):
+            controller._publish_status()
+        self.assertEqual(len(reads), 2)
+
     def test_run_native_ui_passes_one_controller_and_always_stops(self) -> None:
         coordinator = FakeCoordinator()
         bridge = RecordingBridge()

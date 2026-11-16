@@ -17,7 +17,7 @@ from pathlib import Path
 import stat
 from typing import BinaryIO
 
-from .models import AdapterError
+from .models import AdapterError, FileChangedError
 
 
 FileIdentity = tuple[int, int, int, int]
@@ -123,6 +123,8 @@ def open_regular_file(path: Path | str) -> Iterator[OpenedRegularFile]:
     else:
         try:
             before = source.lstat()
+        except FileNotFoundError as error:
+            raise FileChangedError(f"cannot inspect file: {error}") from error
         except OSError as error:
             raise AdapterError(f"cannot inspect file: {error}") from error
         if not stat.S_ISREG(before.st_mode):
@@ -130,6 +132,8 @@ def open_regular_file(path: Path | str) -> Iterator[OpenedRegularFile]:
 
     try:
         descriptor = os.open(source, flags)
+    except FileNotFoundError as error:
+        raise FileChangedError(f"cannot open file: {error}") from error
     except OSError as error:
         if error.errno == errno.ELOOP:
             raise AdapterError("adapters do not follow symbolic links") from error
@@ -141,7 +145,7 @@ def open_regular_file(path: Path | str) -> Iterator[OpenedRegularFile]:
             raise AdapterError("adapters accept regular files only")
         identity = identity_from_stat(info)
         if before is not None and identity_from_stat(before) != identity:
-            raise AdapterError("file changed while it was being opened")
+            raise FileChangedError("file changed while it was being opened")
         yield OpenedRegularFile(source, descriptor, identity)
     finally:
         os.close(descriptor)

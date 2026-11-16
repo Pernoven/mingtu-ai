@@ -110,7 +110,10 @@ mingtu-ai --doctor               # Run 8-point system diagnostic (GPU, Ports, Mo
 mingtu-ai --doctor --json        # Output diagnostic results as JSON
 mingtu-ai --resolve-ollama MODEL # Resolve GGUF blob path from local Ollama model reference
 mingtu-ai --headless             # Run daemon in headless terminal mode
+mingtu-ai --single-instance --start-minimized # Start one resident in the system tray
 ```
+
+For KDE login startup, run `python scripts/install-autostart.py --model /path/to/model.gguf --mmproj /path/to/mmproj.gguf` with the working Python 3.13 environment. This pins the interpreter path and uses saved watch folders. Use `--dry-run` to preview or `--remove` to disable future login startup. See [startup setup](docs/packaging.md#開發-checkout-的-kde-登入啟動).
 
 ---
 
