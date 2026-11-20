@@ -91,6 +91,10 @@ class RecordingBridge:
         self.proposals = []
         self.busy = []
         self.messages = []
+        self.quit_requested = threading.Event()
+
+    def request_quit(self):
+        self.quit_requested.set()
 
     def set_pending_count(self, count):
         self.pending.append(count)
@@ -124,6 +128,33 @@ class RecordingBridge:
 
 
 class NativeUiTests(unittest.TestCase):
+    def test_shutdown_signal_queues_quit_without_stopping_inside_handler(self):
+        coordinator = FakeCoordinator()
+        controller = NativeUiController(coordinator)
+        bridge = RecordingBridge()
+        controller.start(bridge)
+        try:
+            controller.request_shutdown(15, None)
+            controller.request_shutdown(15, None)
+            self.assertFalse(controller._stop_event.is_set())
+            self.assertTrue(bridge.quit_requested.wait(2))
+        finally:
+            controller.stop()
+
+    def test_monitor_failure_requests_process_exit(self):
+        coordinator = FakeCoordinator()
+        def fail(_stop):
+            raise OSError("watch removed")
+        coordinator.run_forever = fail
+        controller = NativeUiController(coordinator)
+        bridge = RecordingBridge()
+        controller.start(bridge)
+        try:
+            self.assertTrue(bridge.quit_requested.wait(2))
+            self.assertIsInstance(controller.monitor_error, OSError)
+        finally:
+            controller.stop()
+
     def test_controller_starts_monitor_updates_and_stops_idempotently(self) -> None:
         coordinator = FakeCoordinator()
         controller = NativeUiController(coordinator)

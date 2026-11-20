@@ -53,7 +53,12 @@ class ResidentTests(unittest.TestCase):
             self.skipTest("native Qt extension required")
         self._check_logout_signal(headless=False)
 
-    def _check_logout_signal(self, *, headless):
+    def test_lost_watch_exits_qt_resident_with_failure_for_supervisor(self):
+        if importlib.util.find_spec("mingtu_ai.ui._native_ui") is None:
+            self.skipTest("native Qt extension required")
+        self._check_logout_signal(headless=False, invalidate_watch=True)
+
+    def _check_logout_signal(self, *, headless, invalidate_watch=False):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             watched = root / "watched"
@@ -82,10 +87,16 @@ class ResidentTests(unittest.TestCase):
                 else:
                     self.fail("resident did not start monitoring")
                 self.assertTrue(lock.exists())
-                process.terminate()
+                if invalidate_watch:
+                    watched.rmdir()
+                else:
+                    process.terminate()
                 output, error = process.communicate(timeout=5)
-                self.assertEqual(process.returncode, 0, error)
-                self.assertIn("已停止", output)
+                self.assertEqual(process.returncode, 1 if invalidate_watch else 0, error)
+                if invalidate_watch:
+                    self.assertIn("監控停止", error)
+                elif headless:
+                    self.assertIn("已停止", output)
                 self.assertNotIn("Traceback", error)
                 with resident_lock(environment):
                     pass
@@ -93,6 +104,24 @@ class ResidentTests(unittest.TestCase):
                 if process.poll() is None:
                     process.kill()
                     process.communicate()
+
+    def test_restart_policy_install_remove_and_unmanaged_file_protection(self):
+        spec = importlib.util.spec_from_file_location("mingtu_autostart", ROOT / "scripts/install-autostart.py")
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        with tempfile.TemporaryDirectory() as temporary:
+            config = Path(temporary)
+            path = config / "systemd/user/app-org.permind.MingtuAI@autostart.service.d/50-mingtu-resident.conf"
+            module.configure_restart_policy(config, remove=False, dry_run=True)
+            self.assertFalse(path.exists())
+            module.configure_restart_policy(config, remove=False, dry_run=False)
+            self.assertIn("Restart=on-failure", path.read_text())
+            module.configure_restart_policy(config, remove=True, dry_run=False)
+            self.assertFalse(path.exists())
+            path.write_text("# User-owned settings\n")
+            with self.assertRaises(ValueError):
+                module.configure_restart_policy(config, remove=False, dry_run=False)
+            self.assertEqual(path.read_text(), "# User-owned settings\n")
 
     @unittest.skipUnless(shutil.which("desktop-file-validate"), "desktop-file-validate required")
     def test_generated_entry_quotes_paths_without_shell_interpretation(self):

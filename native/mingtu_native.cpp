@@ -918,6 +918,7 @@ PyMethodDef BridgeMethods[] = {
     {"set_action_message", reinterpret_cast<PyCFunction>(bridge_set_action_message), METH_VARARGS, "Display action results and refresh errors."},
     {"_test_action", reinterpret_cast<PyCFunction>(bridge_test_action), METH_VARARGS, "Private synthetic smoke button callback hook."},
     {"_save_screenshot", reinterpret_cast<PyCFunction>(bridge_save_screenshot), METH_VARARGS, "Capture only the app home widget for layout QA."},
+    {"request_quit", reinterpret_cast<PyCFunction>(bridge_finish_smoke), METH_NOARGS, "Queue shutdown through the normal quit handler."},
     {"_finish_smoke", reinterpret_cast<PyCFunction>(bridge_finish_smoke), METH_NOARGS, "Private smoke shutdown through the normal quit handler."},
     {"_save_history_screenshot", reinterpret_cast<PyCFunction>(bridge_save_history_screenshot), METH_VARARGS, "Capture only the app history widget for layout QA."},
     {"set_settings_text", reinterpret_cast<PyCFunction>(bridge_set_settings_text), METH_VARARGS,

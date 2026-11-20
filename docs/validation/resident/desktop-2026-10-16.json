@@ -1,0 +1,25 @@
+{
+  "ActiveState": "active",
+  "SubState": "running",
+  "MainPID": "19270",
+  "resident_pid": 19270,
+  "memory_rss": "105424 kB",
+  "threads": "8",
+  "cpu_percent_one_core_6s": 0.5,
+  "configured_inotify_watches": [
+    {
+      "directory": "/home/knox/下載",
+      "fd": "16",
+      "watch_id": "2",
+      "mask": "40000c8"
+    },
+    {
+      "directory": "/home/knox/圖片/螢幕截圖",
+      "fd": "16",
+      "watch_id": "1",
+      "mask": "40000c8"
+    }
+  ],
+  "duplicate_launch": "returned already running; original PID unchanged",
+  "tray_title": "命圖 AI"
+}

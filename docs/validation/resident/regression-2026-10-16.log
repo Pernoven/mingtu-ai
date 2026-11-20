@@ -1,0 +1,24 @@
+[命圖 AI] 資料夾批次分析完成: 成功為 2/2 個檔案產生改名建議 (通知降級: Failed to show notification: Could not connect: Operation not permitted)
+[命圖 AI] 資料夾批次分析完成: 成功為 2/2 個檔案產生改名建議 (通知降級: Failed to show notification: Could not connect: Operation not permitted)
+[命圖 AI] 資料夾批次分析完成: 成功為 2/2 個檔案產生改名建議 (通知降級: Failed to show notification: Could not connect: Operation not permitted)
+[命圖 AI] 批次復原完成: 已成功恢復 2 個檔案原始檔名 (通知降級: Failed to show notification: Could not connect: Operation not permitted)
+usage: mingtu-ai [-h] [--once FILE | --batch DIR | --doctor |
+                 --resolve-ollama MODEL] [--recursive]
+                 [--preset {default,photo_date,category_ai}] [--hint HINT]
+                 [--dry-run] [-y] [--model MODEL] [--mmproj MMPROJ]
+                 [--llama-server LLAMA_SERVER] [--watch DIR]
+                 [--history-db HISTORY_DB] [--json] [--headless]
+                 [--start-minimized] [--single-instance] [--version]
+mingtu-ai: error: argument --doctor: not allowed with argument --once
+usage: mingtu-ai [-h] [--once FILE | --batch DIR | --doctor |
+                 --resolve-ollama MODEL] [--recursive]
+                 [--preset {default,photo_date,category_ai}] [--hint HINT]
+                 [--dry-run] [-y] [--model MODEL] [--mmproj MMPROJ]
+                 [--llama-server LLAMA_SERVER] [--watch DIR]
+                 [--history-db HISTORY_DB] [--json] [--headless]
+                 [--start-minimized] [--single-instance] [--version]
+mingtu-ai: error: argument --resolve-ollama: not allowed with argument --doctor
+----------------------------------------------------------------------
+Ran 424 tests in 29.168s
+
+OK

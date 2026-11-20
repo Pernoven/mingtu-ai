@@ -20,6 +20,18 @@ python scripts/install-autostart.py --model /path/to/model.gguf --mmproj /path/t
 
 `start-resident.py` 及 `./run` 使用同一個 Linux `flock`，避免重複常駐。鎖在退出或當機時由 kernel 釋放；不要手動刪除鎖檔。直接使用 console command 時可加 `--single-instance --start-minimized`。一次性分析與批次命名不受常駐鎖阻擋。請勿同時啟用另一套命圖 systemd service。
 
+腳本也會為 KDE 產生的 `app-org.permind.MingtuAI@autostart.service` 安裝受管理的 drop-in：異常退出後等待 5 秒重啟，正常選擇「離開」或登出時不重啟。監控執行緒發生致命錯誤時會讓程序以失敗狀態退出，避免留下未監控的系統匣。設定透過 [systemd 的 Restart 規則](https://www.freedesktop.org/software/systemd/man/latest/systemd.service.html) 運作，前提是桌面使用 [XDG autostart generator](https://www.freedesktop.org/software/systemd/man/latest/systemd-xdg-autostart-generator.html)。
+
+更新程式後，先用原本的 Python 執行 `scripts/build_native_ui.py` 重建原生擴充，再套用並重啟現有服務：
+
+```fish
+systemctl --user daemon-reload
+systemctl --user restart app-org.permind.MingtuAI@autostart.service
+systemctl --user status app-org.permind.MingtuAI@autostart.service
+```
+
+截圖監控涵蓋 `IN_CREATE`、`IN_CLOSE_WRITE` 與 `IN_MOVED_TO`，都需經過穩定性與去重檢查。Qt `QSaveFile` 的匿名暫存檔提交可能只產生 `IN_CREATE`，因此不能只依賴寫入完成與移入事件。重啟期間產生或先前漏掉的舊檔案不會自動補掃。
+
 移除下次登入的啟動設定（目前的程式可從系統匣選「離開」）：
 
 ```fish

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+import os
 import sys
 from tempfile import TemporaryDirectory
 import threading
@@ -107,6 +108,21 @@ class WatchPolicyTests(unittest.TestCase):
 
 @unittest.skipUnless(sys.platform.startswith("linux"), "Linux inotify test")
 class InotifyIntegrationTests(unittest.TestCase):
+    def test_completed_file_published_by_hardlink_is_seen(self) -> None:
+        # Like Qt's anonymous temporary-file commit: the final name has no
+        # close-write or moved-to event, only IN_CREATE.
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            staged = root / ".completed-image"
+            staged.write_bytes(b"completed screenshot")
+            with InotifyWatcher([root]) as watcher:
+                monitor = FileEventMonitor(watcher, stable_interval=0.01)
+                final = root / "Screenshot.png"
+                os.link(staged, final)
+                staged.unlink()
+                self.assertEqual(monitor.poll(1), [final])
+                self.assertEqual(monitor.poll(0.05), [])
+
     def test_burst_settles_together_instead_of_waiting_per_file(self) -> None:
         with TemporaryDirectory() as directory:
             root = Path(directory)

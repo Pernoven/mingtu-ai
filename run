@@ -3,7 +3,7 @@
 set -l repo_dir (path resolve (dirname (status filename)))
 builtin cd "$repo_dir"; or exit 1
 
-set -x MINGTU_AI_MODEL "/home/knox/large models/gemma-4-E4B-it-Q4_K_M.gguf"
-set -x MINGTU_AI_MMPROJ "/home/knox/large models/gemma-4-E4B-it-mmproj.gguf"
+set -x MINGTU_AI_MODEL "/home/knox/large models/gemma-4-E2B-it-UD-Q4_K_XL.gguf"
+set -x MINGTU_AI_MMPROJ "/home/knox/large models/mmproj-F16.gguf"
 
 exec ./scripts/dev-run.fish --single-instance $argv

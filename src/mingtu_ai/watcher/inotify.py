@@ -20,6 +20,7 @@ from .policy import EventDeduplicator, OwnedMoveSuppressor, _snapshot, should_ig
 IN_CLOSE_WRITE = 0x00000008
 IN_MOVED_FROM = 0x00000040
 IN_MOVED_TO = 0x00000080
+IN_CREATE = 0x00000100
 IN_Q_OVERFLOW = 0x00004000
 IN_IGNORED = 0x00008000
 IN_ISDIR = 0x40000000
@@ -31,6 +32,7 @@ WATCH_MASK = (
     IN_CLOSE_WRITE
     | IN_MOVED_FROM
     | IN_MOVED_TO
+    | IN_CREATE
     | IN_ONLYDIR
     | IN_DONT_FOLLOW
     | IN_EXCL_UNLINK
@@ -101,7 +103,9 @@ class InotifyEvent:
 
     @property
     def is_ready_file(self) -> bool:
-        return not self.mask & IN_ISDIR and bool(self.mask & (IN_CLOSE_WRITE | IN_MOVED_TO))
+        # QSaveFile can publish an O_TMPFILE with linkat(), producing only
+        # IN_CREATE for the final name. All candidates still undergo settling.
+        return not self.mask & IN_ISDIR and bool(self.mask & (IN_CLOSE_WRITE | IN_MOVED_TO | IN_CREATE))
 
 
 class InotifyWatcher:

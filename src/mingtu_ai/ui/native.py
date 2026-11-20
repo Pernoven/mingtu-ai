@@ -11,6 +11,7 @@ import importlib
 import json
 import queue
 import os
+import signal
 import threading
 import time
 from types import ModuleType
@@ -26,6 +27,8 @@ class NativeUiUnavailable(RuntimeError):
 
 
 class NativeBridge(Protocol):
+    def request_quit(self) -> None: ...
+
     def set_pending_count(self, count: int) -> None: ...
 
     def set_model_status(self, status: str) -> None: ...
@@ -66,6 +69,13 @@ class NativeUiController:
         self._history_cache_json = "[]"
         self._history_cache_time = 0.0
         self._refresh_event = threading.Event()
+        self._shutdown_requested = False
+        self.monitor_error: Exception | None = None
+
+    def request_shutdown(self, _signum: int, _frame: object) -> None:
+        # Python signal handlers must not take locks or raise through a Qt
+        # callback. The status thread queues shutdown on Qt's event loop.
+        self._shutdown_requested = True
 
     def start(self, bridge: NativeBridge) -> None:
         """Called once by Qt before entering its main-thread event loop."""
@@ -173,6 +183,7 @@ class NativeUiController:
         try:
             self.coordinator.run_forever(self._stop_event)
         except Exception as exc:
+            self.monitor_error = exc
             bridge = self._bridge
             try:
                 if bridge is not None:
@@ -181,6 +192,11 @@ class NativeUiController:
                 pass  # The native event loop may already have invalidated it.
             finally:
                 self._signal_stop()
+                if bridge is not None:
+                    try:
+                        bridge.request_quit()
+                    except RuntimeError:
+                        pass
 
     def request_action(self, action: str, event_id: int, edited_stem: str | None = None) -> bool:
         """Admit at most one user action; filesystem work never runs on Qt's thread."""
@@ -322,6 +338,9 @@ class NativeUiController:
         history_due = 0.0
         while not self._stop_event.is_set():
             bridge = self._bridge
+            if self._shutdown_requested and bridge is not None:
+                bridge.request_quit()
+                return
             active = self.coordinator.is_active
             if bridge is not None:
                 try:
@@ -454,8 +473,12 @@ def run_native_ui(
         raise NativeUiUnavailable("Qt 原生擴充模組缺少 run() 介面")
 
     controller = NativeUiController(coordinator)
+    previous_handlers = {
+        sig: signal.signal(sig, controller.request_shutdown)
+        for sig in (signal.SIGINT, signal.SIGTERM)
+    }
     try:
-        return int(
+        exit_code = int(
             run(
                 controller,
                 app_name="命圖 AI",
@@ -463,5 +486,12 @@ def run_native_ui(
                 show_windows=show_windows,
             )
         )
+        if controller.monitor_error is not None:
+            raise RuntimeError(f"監控停止：{controller.monitor_error}") from controller.monitor_error
+        return exit_code
     finally:
-        controller.stop()
+        try:
+            controller.stop()
+        finally:
+            for sig, handler in previous_handlers.items():
+                signal.signal(sig, handler)

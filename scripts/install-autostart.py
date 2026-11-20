@@ -20,6 +20,42 @@ import tempfile
 ENTRY_NAME = "org.permind.MingtuAI.desktop"
 MARKER = "X-Mingtu-Managed=true"
 ROOT = Path(__file__).resolve().parents[1]
+RESTART_POLICY = """# X-Mingtu-Managed=true
+[Unit]
+StartLimitIntervalSec=0
+
+[Service]
+Restart=on-failure
+RestartSec=5s
+TimeoutStopSec=135s
+Environment=PYTHONUNBUFFERED=1
+"""
+
+
+def configure_restart_policy(config: Path, *, remove: bool, dry_run: bool) -> None:
+    # systemd-xdg-autostart-generator creates this unit from ENTRY_NAME.
+    # https://www.freedesktop.org/software/systemd/man/latest/systemd.service.html
+    destination = config / "systemd/user/app-org.permind.MingtuAI@autostart.service.d/50-mingtu-resident.conf"
+    if destination.is_symlink():
+        raise ValueError(f"保留符號連結：{destination}")
+    if destination.exists() and MARKER not in destination.read_text(encoding="utf-8"):
+        raise ValueError(f"保留其他來源的服務設定：{destination}")
+    if dry_run:
+        print(f"{'將移除' if remove else '將設定'}異常重啟保護：{destination}")
+        return
+    if remove:
+        destination.unlink(missing_ok=True)
+        return
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    descriptor, name = tempfile.mkstemp(prefix=".mingtu-", dir=destination.parent)
+    try:
+        with os.fdopen(descriptor, "w", encoding="utf-8") as stream:
+            stream.write(RESTART_POLICY)
+        os.replace(name, destination)
+    finally:
+        Path(name).unlink(missing_ok=True)
+    print(f"已設定異常重啟保護：{destination}")
+    print("服務設定會在下次登入生效；立即套用可執行 systemctl --user daemon-reload")
 
 
 def desktop_string(value: str) -> str:
@@ -59,12 +95,14 @@ def main(argv: list[str] | None = None) -> int:
     try:
         if args.remove:
             if not destination.exists():
+                configure_restart_policy(config, remove=True, dry_run=args.dry_run)
                 print("自動啟動設定不存在。")
                 return 0
             if destination.is_symlink() or MARKER not in destination.read_text(encoding="utf-8"):
                 raise ValueError("這個啟動設定不是由本工具建立，保留原檔。")
             if not args.dry_run:
                 destination.unlink()
+            configure_restart_policy(config, remove=True, dry_run=args.dry_run)
             print(f"{'將移除' if args.dry_run else '已移除'}：{destination}")
             return 0
 
@@ -103,6 +141,7 @@ def main(argv: list[str] | None = None) -> int:
             print(entry, end="")
             print("監控資料夾：" + ", ".join(map(str, watches)))
             print(f"目標：{destination}")
+            configure_restart_policy(config, remove=False, dry_run=True)
             return 0
         destination.parent.mkdir(parents=True, exist_ok=True)
         if destination.is_symlink():
@@ -110,6 +149,7 @@ def main(argv: list[str] | None = None) -> int:
         if destination.exists():
             old_entry = destination.read_text(encoding="utf-8")
             if old_entry == entry:
+                configure_restart_policy(config, remove=False, dry_run=False)
                 print(f"設定已相同：{destination}")
                 return 0
             if MARKER not in old_entry:
@@ -127,6 +167,7 @@ def main(argv: list[str] | None = None) -> int:
         finally:
             Path(name).unlink(missing_ok=True)
         print(f"已啟用 KDE 登入後自動啟動：{destination}")
+        configure_restart_policy(config, remove=False, dry_run=False)
         print("監控資料夾：" + ", ".join(map(str, watches)))
         return 0
     except (OSError, ValueError, subprocess.SubprocessError) as exc:

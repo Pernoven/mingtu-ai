@@ -1,0 +1,20 @@
+{
+  "burst": {
+    "files": 32,
+    "serial_reference_seconds": 9.616950080000152,
+    "optimized_seconds": 0.3017539040001793
+  },
+  "status": "pass",
+  "real_model": true,
+  "native_ui": true,
+  "monitor": "inotify",
+  "idle_seconds": 6.000161943999956,
+  "idle_cpu_seconds": 0.015453229000000013,
+  "idle_history_queries": 1,
+  "idle_model_instances": 0,
+  "suggestion_seconds": 27.156272230000013,
+  "suggested_filename": "geometric_shapes_blue_orange_green.png",
+  "source_sha256": "c367ce7805a3b044a76466f4a68e33457876c3f7a5cd0c40626ee4485adf39c8",
+  "original_unchanged": true,
+  "model_released": true
+}
